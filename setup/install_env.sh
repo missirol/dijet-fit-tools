@@ -19,6 +19,6 @@ if [ ! -x bin/micromamba ]; then
   chmod +x bin/micromamba
 fi
 ./bin/micromamba create -y -p "$PREFIX" -c conda-forge \
-  "root=6.36.14" "cms-combine=11.1.0" "python=3.12" numpy
+  "root=6.36.14" "cms-combine=11.1.0" "python=3.12" numpy pytest
 ./bin/micromamba run -p "$PREFIX" python -c \
   "import ROOT; print('ROOT', ROOT.gROOT.GetVersion()); print('Combine:', ROOT.gSystem.Load('libHiggsAnalysisCombinedLimit') >= 0)"

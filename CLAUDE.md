@@ -23,3 +23,5 @@
     ("--weights counts") stays available as an option.
   - Signal parameters vs mass: splines by default, polynomials via command line.
 - Every fit needs a plot with a pull sub-pad, pull = (data - fit) / data_error.
+- Tests: run `pytest` (inside the environment) after changes; extend the unit tests and the
+  closure test (tests/synthetic.py, tests/test_closure.py) together with new features.

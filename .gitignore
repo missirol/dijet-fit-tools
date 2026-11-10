@@ -5,6 +5,7 @@ output/
 # python
 __pycache__/
 *.pyc
+.pytest_cache/
 # local environment created by setup/install_env.sh
 /env/
 /.mamba/

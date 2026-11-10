@@ -69,6 +69,40 @@ exponential) is fixed and recorded in `signal_fits.json`. The templates are weig
 uncertainties. `--weights counts` fits the MC counts instead (Poisson errors) and scales the
 yield back, which is equivalent for uniform weights.
 
+## Tests
+
+Run inside the analysis environment, from the repository root:
+
+```
+pytest                                   # everything, fit range 150-600 GeV (~1 min)
+pytest -m "not closure"                  # unit tests only (~10 s)
+pytest --fit-xmin 160 --fit-xmax 650     # another fit range (inside 100-800 GeV)
+```
+
+The fit range used by all tests is a command-line option (`--fit-xmin`, `--fit-xmax`;
+default 150-600 GeV, as in `run_all.sh`).
+
+* **Unit tests** (`tests/test_*.py`) check the building blocks against exact answers: category
+  selection, fit-range windows and rebinning, splines and their RooFit formulas, the background
+  functions (formulas, decorrelated basis, starting values), the goodness-of-fit and F-test
+  helpers, the Crystal Ball definition, and fits of Asimov histograms (contents equal to the
+  expectation), which must return the generating parameters. One of them guards against the
+  bias of bin-centre evaluation for wide bins.
+* **Closure test** (`tests/test_closure.py`): `tests/synthetic.py` generates inputs in the real
+  format from known functions (dijet background, Crystal Ball signal at 200-500 GeV, and an
+  extra 350 GeV sample kept out of the fits), with settings that differ on purpose from the
+  real ones (category names, histogram range, luminosity). `run_all.sh` runs on them with the
+  configured fit range, and every step is compared with the truth: input normalisation and
+  category selection, the fit range (must stay as configured), the fit of the generating
+  background function, the signal fits (likelihood ratio against the truth), the interpolated
+  signal model at 350 GeV, the workspace content, one plot per fit, and (if CMS Combine is
+  installed) that Combine reads the workspace and that `-m` sets the mass.
+* **Scan test** (also in `tests/test_closure.py`): a background with a turn-on just above the
+  configured lower edge; `fit_background.py --scan` must raise the lower edge past it.
+
+The synthetic inputs can also be generated on their own: `python tests/synthetic.py -o DIR
+[--turnon-mid M]` prints the matching `run_all.sh` command.
+
 ## Inputs
 
 ROOT input files are **never committed** to this repository (`*.root` is git-ignored).
