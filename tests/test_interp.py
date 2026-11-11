@@ -52,7 +52,8 @@ def test_poly_fit_recovers_polynomial_and_handles_zero_errors():
     m = interp.poly_fit(xs, ys, [0.1] * 4, 2)
     assert m["coefficients"] == pytest.approx([1.0, -0.02, 3e-5], rel=1e-6)
     assert m["weighted"] and m["chi2"] == pytest.approx(0.0, abs=1e-12)
-    # a point without uncertainty (parameter fixed in the fit) -> equal weights, not ignored
+    # points without uncertainty (parameters fixed in the fit, stored with error 0; they enter a
+    # polynomial fit only when fewer than two points float) -> all points get equal weights
     m0 = interp.poly_fit(xs, [1.0, 1.0, 1.0, 5.0], [0.1, 0.0, 0.1, 0.1], 1)
     assert not m0["weighted"]
     assert m0["coefficients"] == pytest.approx(np.polyfit(xs, [1.0, 1.0, 1.0, 5.0], 1)[::-1])
@@ -63,3 +64,15 @@ def test_parse_model():
     assert interp.parse_model("POL3") == ("poly", 3)
     with pytest.raises(ValueError):
         interp.parse_model("cubic")
+
+
+def test_hold_outside_keeps_the_model_constant_beyond_its_points(ROOT):
+    """A parameter determined only at some masses is held constant beyond them (no
+    extrapolation), identically in python and in the RooFit formula."""
+    m = interp.build("spline", XS[:3], YS[:3], [0.1] * 3)
+    m["hold_outside"] = [XS[0], XS[2]]
+    f = ROOT.TFormula("fh", interp.formula(m, "x"))
+    assert interp.evaluate(m, 500.0) == pytest.approx(YS[2])
+    assert interp.evaluate(m, 150.0) == pytest.approx(YS[0])
+    for x in (150.0, 250.0, 380.0, 450.0, 500.0):
+        assert f.Eval(x) == pytest.approx(interp.evaluate(m, x), rel=1e-12)

@@ -47,15 +47,6 @@ def window_hist(ROOT, hist, xmin, xmax, rebin=1, name=None):
     return out
 
 
-def is_weighted(hist):
-    """True if the bin errors differ from sqrt(content)."""
-    for i in range(1, hist.GetNbinsX() + 1):
-        c = hist.GetBinContent(i)
-        if abs(hist.GetBinError(i) ** 2 - c) > 1e-6 * max(1.0, abs(c)):
-            return True
-    return False
-
-
 def binning_label(edges):
     widths = sorted({round(b - a, 6) for a, b in zip(edges[:-1], edges[1:])})
     if len(widths) == 1:

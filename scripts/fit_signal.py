@@ -11,8 +11,10 @@ and scales the yield back instead.
 A fit is *failed* if it has status != 0, a covariance matrix that is not full and accurate
 (covQual != 3), or a floating parameter at its limit (after the fixing rules of
 dijetfit/signal.py). Failed fits are kept in the outputs (flag "usable": false) but are not used
-for the signal parametrisation. The goodness of fit (p-value of the Poisson likelihood-ratio
-chi2 on the equivalent MC counts) is reported as a quality figure; it does not reject fits.
+for the signal parametrisation. The goodness of fit is reported as a quality figure and does
+not reject fits: the p-value of the Poisson likelihood-ratio chi2 on the equivalent MC counts
+for uniformly weighted templates (the normal case), of a Neyman chi2 with the bin errors
+otherwise.
 
 Mass points outside the fit range or too close to its edges are dropped: a mass M is used only
 if XMIN + D <= M <= XMAX - D, with D = --min-distance (default 10 GeV); e.g. with the default
@@ -68,6 +70,11 @@ def main():
     bkg = read_json(args.background)
     xmin, xmax = bkg["fit_range"]
     cats = args.categories or sorted(bkg["categories"])
+    unknown = [c for c in cats if c not in bkg["categories"]]
+    if unknown:
+        dropped = [c for c in unknown if c in bkg.get("dropped_categories", {})]
+        sys.exit(f"ERROR: categories not in {args.background}: {', '.join(unknown)}"
+                 + (f" (dropped in the background step: {', '.join(dropped)})" if dropped else ""))
     tfile = ROOT.TFile.Open(args.input)
     if not tfile or tfile.IsZombie():
         sys.exit(f"ERROR: cannot open {args.input}")

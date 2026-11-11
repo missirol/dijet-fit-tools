@@ -42,11 +42,16 @@ Notes:
   of `eventsProcessed` in the signal file), i.e. to σ = 1 nb. A Combine signal strength `r`
   is therefore the cross section × branching fraction in nb.
 * **Signal parametrisation**: by default a natural cubic spline through the values fitted at the
-  mass points (polynomials can be chosen in `parametrize_signal.py`). The functions are clamped
+  mass points (polynomials can be chosen in `parametrize_signal.py`). Failed signal fits are not
+  used. Each parameter is interpolated only through the mass points where it was floating in
+  the fit (values fixed by the fitting procedure are not measurements), or through all points if
+  fewer than two float; beyond its outermost points used, a parameter is held constant (e.g.
+  `alphaR` when it was fixed at the highest mass because the right tail lies outside the fit
+  range). The functions are clamped
   so that interpolation cannot produce an invalid shape: `alphaL`, `alphaR`, `nL`, `nR` to the
   ranges allowed in the signal fits (α in [0.1, 8], n in [0.5, 100]), `sigma` to at least 1 GeV,
   the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
-  covered by every category: no extrapolation.
+  covered by every category, so no parameter is extrapolated.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
   the families `dijet`, `moddijet` and `ua2` with 3–6 parameters (the number includes the
   normalisation). The formulas are written in a numerically decorrelated basis: the fitted

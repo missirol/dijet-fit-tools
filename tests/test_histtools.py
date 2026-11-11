@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from conftest import make_th1
-from dijetfit.histtools import bin_edges_in_window, binning_label, is_weighted, window_hist
+from dijetfit.histtools import bin_edges_in_window, binning_label, window_hist
 
 
 @pytest.fixture
@@ -36,9 +36,6 @@ def test_window_hist_contents_and_errors(ROOT, hist):
     assert h.Integral() == pytest.approx(sum(range(2, 11)))
 
 
-def test_is_weighted_and_label(ROOT):
-    e = [0.0, 1.0, 2.0]
-    assert not is_weighted(make_th1(ROOT, "u", e, [4.0, 9.0]))
-    assert is_weighted(make_th1(ROOT, "w", e, [4.0, 9.0], errors=[1.0, 1.0]))
+def test_binning_label():
     assert binning_label([0.0, 2.0, 4.0]) == "2 bins of 2 GeV"
     assert "last bin narrower" in binning_label([0.0, 2.0, 3.0])

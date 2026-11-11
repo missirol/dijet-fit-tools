@@ -185,13 +185,12 @@ def generate(outdir, seed=12345, turnon=None):
     return truth
 
 
-def workflow_config(xmin, xmax, scan_max_unbinned=None, scan_max=None):
-    """Settings for run_all.sh matching the synthetic inputs (environment variables). Without
-    explicit scan limits, the scan may not move the lower edge (scan limits = xmin)."""
+def workflow_config(xmin, xmax, scan_max=None):
+    """Settings for run_all.sh matching the synthetic inputs (environment variables). The scan
+    may raise the lower edge up to scan_max (default: xmin + 60 GeV)."""
     return dict(
         LUMI=str(LUMI), XMIN=f"{xmin:g}", XMAX=f"{xmax:g}",
-        SCAN_MAX_UNBINNED=f"{scan_max_unbinned if scan_max_unbinned is not None else xmin:g}",
-        SCAN_MAX=f"{scan_max if scan_max is not None else xmin:g}",
+        SCAN_MAX=f"{scan_max if scan_max is not None else xmin + 60.0:g}",
         CATEGORIES=f"({CATEGORY_PREFIX}\\d+p\\d+to\\d+p\\d+){CATEGORY_SUFFIX}",
         EXCLUDE=f"{CATEGORY_PREFIX}{INCLUSIVE}{CATEGORY_SUFFIX}", FORMATS="png")
 

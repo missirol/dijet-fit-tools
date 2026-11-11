@@ -95,3 +95,38 @@ def test_stage_boundaries():
     assert seq[first_rebin][0] == MAX_UNBINNED
     assert [x for x, f in seq[:first_rebin]] == [150.0, 155.0, 160.0, 165.0, 170.0]
     assert max(x for x, f in seq) == MAX
+
+
+def test_without_rebin_factors_the_edge_is_raised_up_to_scan_max_without_rebinning():
+    """Default of the workflow: no rebinning; the lower edge goes up to --scan-max."""
+    seen = []
+
+    def ev(x, c, f):
+        seen.append(f)
+        ok = c == "A" or x >= 190
+        return (x, f), ok
+
+    xmin, rebin, _, failing = scan_fit_range(ev, ["A", "B"], START, STEP, MAX_UNBINNED, MAX, (), lambda s: None)
+    assert xmin == 190 and failing == [] and rebin == {"A": 1, "B": 1}
+    assert set(seen) == {1}
+
+
+def test_drop_failing_keeps_the_lowest_edge_with_the_most_passing_categories():
+    """A category that never passes must not raise the lower edge of the others."""
+    rules = {"A": lambda x, f: x >= 160, "B": always, "C": lambda x, f: False}
+    seen = []
+
+    def ev(x, c, f):
+        seen.append(x)
+        ok = rules[c](x, f)
+        return (x, c, f, ok), ok
+
+    xmin, rebin, results, failing = scan_fit_range(ev, ["A", "B", "C"], START, STEP, MAX_UNBINNED, MAX,
+                                                   (), lambda s: None, drop_failing=True)
+    assert xmin == 160 and failing == ["C"]
+    assert results["A"] == (160, "A", 1, True) and results["C"][3] is False
+    assert max(seen) == MAX  # the whole range was scanned before giving up on C
+    # without dropping, the scan reports the last edge tried
+    xmin2, _, _, failing2 = scan_fit_range(ev, ["A", "B", "C"], START, STEP, MAX_UNBINNED, MAX,
+                                           (), lambda s: None)
+    assert xmin2 == MAX and failing2 == ["C"]

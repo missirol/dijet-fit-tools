@@ -114,6 +114,8 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
 
     integrate = needs_bin_integration(lo, hi)  # rebinned category: integrate over the bins
 
+    texts = []  # RooFit/Minuit output of every stage (messages are counted over all of them)
+
     def fit():
         with capture_output() as log:
             r = model.fitTo(data, ROOT.RooFit.Save(True), ROOT.RooFit.PrintLevel(-1),
@@ -122,6 +124,7 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
                             ROOT.RooFit.AsymptoticError(weights == "asymptotic"),
                             ROOT.RooFit.Extended(True),
                             ROOT.RooFit.IntegrateBins(BIN_INTEGRATION_PRECISION if integrate else -1))
+        texts.append(log["text"])
         return r, log["text"]
 
     # The parameters are released in stages, from the core to the tails:
@@ -177,7 +180,8 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
         res, text = fit()
         stages.append(dict(stage=4 + it, status=int(res.status()), counts=count_messages(text),
                            fixed=sorted(new)))
-    nwarn, nerr = count_messages(text)
+    all_text = "\n".join(texts)
+    nwarn, nerr = count_messages(all_text)
 
     nu = expected_counts(ROOT, x, pdf, p["norm"].getVal(), lo, hi, integrate)
     if w_common is not None:  # raw MC counts: Poisson likelihood-ratio chi2
@@ -217,9 +221,11 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
     return dict(
         mass=mass, status=int(res.status()), cov_qual=int(res.covQual()), edm=float(res.edm()),
         chi2=chi2, chi2_kind=chi2_kind, ndf=ndf, pvalue=pvalue, n_warnings=nwarn, n_errors=nerr,
-        messages=message_summary(text), params_at_limit=at_limit,
+        messages=message_summary(all_text), params_at_limit=at_limit,
+        # a parameter fixed by the procedure has no uncertainty (RooFit would keep the stale
+        # error of the fit before it was fixed)
         params={k: dict(value=v.getVal() * (wscale if k == "norm" else 1.0),
-                        error=v.getError() * (wscale if k == "norm" else 1.0),
+                        error=0.0 if v.isConstant() else v.getError() * (wscale if k == "norm" else 1.0),
                         constant=bool(v.isConstant()))
                 for k, v in p.items()},
         weights_mode=weights,

@@ -159,8 +159,8 @@ def main():
                     cat_index.defineType(func, i)
                 bnames.append(func)
                 keep += [pdf, arglist]
-            best = cb["best"]
-            nb = cb["fits"][best]["norm"]
+            default_fn = cb["default"]
+            nb = cb["fits"][default_fn]["norm"]
             bnorm = ROOT.RooRealVar(f"bkg_{c}_norm", f"background yield, {c}", nb["value"],
                                     0.0, 2.0 * nb["value"])
             bnorm.setError(nb["error"])
@@ -168,10 +168,10 @@ def main():
             if use_multipdf:
                 mp = ROOT.RooMultiPdf(f"bkg_{c}", f"background, {c}", cat_index, pdfs)
                 keep.append(mp)
-                cat_index.setIndex(bnames.index(best))
+                cat_index.setIndex(bnames.index(default_fn))
                 wimport(w, mp, ROOT)
             else:
-                cat_index.setIndex(bnames.index(best))
+                cat_index.setIndex(bnames.index(default_fn))
                 for i in range(pdfs.getSize()):
                     wimport(w, pdfs.at(i), ROOT)
                 wimport(w, cat_index, ROOT)
@@ -183,7 +183,7 @@ def main():
                                 norm=f"bkg_{c}_norm", index=f"pdfindex_{c}",
                                 functions={f: f"bkg_{c}_{f}" for f in bnames},
                                 index_to_function={i: f for i, f in enumerate(bnames)},
-                                default=best, default_index=bnames.index(best)))
+                                default=default_fn, default_index=bnames.index(default_fn)))
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         w.writeToFile(str(args.output), True)
     nwarn, nerr = count_messages(log["text"])

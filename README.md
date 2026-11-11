@@ -44,16 +44,20 @@ All later steps work on whatever categories `inputs.root` contains.
 
 The fit range is the same for all categories and is always given on the command line
 (`--xmin/--xmax`); the scripts have no built-in range. The analysis defaults live in
-`run_all.sh` (150–600 GeV; scan limits 190 and 250 GeV), overridable with environment
-variables. With `--scan` the lower edge is raised in 5 GeV steps (up to `--scan-max-unbinned`)
-until every category has at least one passing function; then failing categories are rebinned
-(2, 5, 10 bins merged, smallest factor that works), and only then is the lower edge raised
-further (up to `--scan-max`), each category restarting from no rebinning at every step.
-Rebinning is applied only where needed and is logged. Note that `build_workspace.py` refuses
-categories with bins wider than 1 GeV, because Combine evaluates the pdfs at the bin centres
-(see `docs/OUTPUT_FORMAT.md`). A category without any passing function stops the workflow,
-unless `DROP_FAILING_CATEGORIES=1` (`fit_background.py --drop-failing-categories`) is set, in
-which case it is left out and listed in `background_fits.json`. Signal mass points closer than
+`run_all.sh` (150–600 GeV, scan up to a lower edge of 250 GeV), overridable with environment
+variables. With `--scan` the lower edge is raised in 5 GeV steps (up to `--scan-max`) until
+every category has at least one passing function. Every step is logged.
+
+Rebinning is switched off by default: `build_workspace.py` refuses categories with bins wider
+than 1 GeV, because Combine evaluates the pdfs at the bin centres (see `docs/OUTPUT_FORMAT.md`).
+For studies it can be switched on with `REBIN_FACTORS` (`--rebin-factors`, e.g. `2 5 10`): the
+failing categories are then rebinned at `SCAN_MAX_UNBINNED` (default 190 GeV) with the smallest
+factor that works, before the lower edge is raised further.
+
+A category without any passing function stops the workflow, unless `DROP_FAILING_CATEGORIES=1`
+(`fit_background.py --drop-failing-categories`) is set: it is then left out and listed in
+`background_fits.json`, and the scan keeps the lowest lower edge with the most passing
+categories, so that such a category does not raise the lower edge of the others. Signal mass points closer than
 10 GeV to either edge of the fit range (or outside it) are dropped (with the defaults, M200 is
 dropped above 190 GeV).
 
@@ -81,7 +85,9 @@ exponential) is fixed and recorded in `signal_fits.json`. The templates are weig
 uncertainties; for the fit the weights are rescaled to a mean of 1 (and the yield scaled back),
 because Minuit's convergence criterion depends on the overall scale of the likelihood.
 `--weights counts` fits the MC counts instead (Poisson errors) and scales the yield back, which
-is equivalent for uniform weights.
+is equivalent for uniform weights. Two further modes exist for comparisons: `asymptotic`
+(RooFit's AsymptoticError; RooFit warns that it is not designed for binned data) and `none`
+(no error correction; uncertainties wrong by about 1/√w).
 
 A signal fit is *failed* if it has status != 0, covariance quality != 3 or a parameter at its
 limit (after the fixing rules); failed fits are kept in `signal_fits.json` but not used for

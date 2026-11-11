@@ -13,9 +13,9 @@
   - Signal normalised to 1 nb: x lumi (nb^-1, default 680000) / integral of `eventsProcessed`.
   - One fit range for all categories, default 150-600 GeV. The range must stay configurable:
     no fit-range numbers hard-coded in the scripts (defaults only in run_all.sh).
-    Raise the lower edge in 5 GeV steps
-    if background fits fail; rebin only if needed, per category, and log it. Drop M200 if the
-    lower edge goes above 190 GeV.
+    Raise the lower edge in 5 GeV steps if background fits fail. Rebinning is switched off by
+    default (the workspace only supports 1 GeV bins); it stays available for studies
+    (--rebin-factors), per category and logged. Drop M200 if the lower edge goes above 190 GeV.
   - Background fits must reach p > 5% (plus status 0, covQual 3, no parameter at a limit);
     only such fits are used. Per family (3-6 parameters), standard F-tests (5%) from the lowest
     acceptable order give the highest order. Default = family maximum with the largest p-value;
@@ -25,10 +25,12 @@
   - Yields always refer to the fit range.
   - Signal fits: weighted templates with SumW2 errors by default; the MC-counts approach
     ("--weights counts") stays available as an option.
-  - A signal fit is failed if status != 0, covQual != 3 or a parameter at its limit; failed fits
-    are not used for the parametrisation. Signal p-values are a quality figure, not a cut.
+  - A signal fit is failed if status != 0, covQual != 3 or a floating parameter ends at its
+    limit (tail parameters that the procedure deliberately fixes at a limit do not count); failed
+    fits are not used for the parametrisation. Signal p-values are a quality figure, not a cut.
   - Signal parameters vs mass: splines by default, polynomials via command line; each parameter
-    is interpolated only through the mass points where it was floating in the fit.
+    is interpolated only through the mass points where it was floating in the fit, and held
+    constant beyond the outermost such points.
 - Every fit needs a plot with a pull sub-pad, pull = (data - fit) / data_error.
 - Tests: run `pytest` (inside the environment) after changes; extend the unit tests and the
   closure test (tests/synthetic.py, tests/test_closure.py) together with new features.

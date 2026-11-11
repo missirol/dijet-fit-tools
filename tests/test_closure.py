@@ -75,8 +75,9 @@ def test_inputs_categories_and_normalisation(ROOT, run):
 
 # ---- step 2 -------------------------------------------------------------------------------------
 def test_fit_range_is_the_configured_one(run):
-    """Without a turn-on, the fits pass at the configured lower edge: the fit range must be
-    exactly the configured one, without rebinning."""
+    """Without a turn-on, the fits pass at the configured lower edge: although the scan may
+    raise it (up to XMIN + 60 GeV), the fit range must stay exactly the configured one."""
+    assert float(syn.workflow_config(*run["fit_range"])["SCAN_MAX"]) > run["fit_range"][0]
     assert run["bkg"]["fit_range"] == list(run["fit_range"])
     assert all(c["rebin"] == 1 for c in run["bkg"]["categories"].values())
 
@@ -116,10 +117,10 @@ def test_background_closure(ROOT, run):
         assert not gen["verdict"].startswith("fail"), (cat, gen["verdict"])
         # RooMultiPdf: default + at most 4 alternates; default = the family maximum with the largest
         # p-value; alternates ordered by p-value; nothing above a family's F-test maximum
-        assert 1 <= len(cb["passing"]) <= 5 and cb["best"] == cb["passing"][0]
+        assert 1 <= len(cb["passing"]) <= 5 and cb["default"] == cb["passing"][0]
         maxima = {cb["fits"][f]["ftest_max"] for f in cb["fits"]} - {None}
-        assert cb["best"] in maxima
-        assert cb["fits"][cb["best"]]["pvalue"] == max(cb["fits"][f]["pvalue"] for f in maxima)
+        assert cb["default"] in maxima
+        assert cb["fits"][cb["default"]]["pvalue"] == max(cb["fits"][f]["pvalue"] for f in maxima)
         alt_p = [cb["fits"][f]["pvalue"] for f in cb["passing"][1:]]
         assert alt_p == sorted(alt_p, reverse=True)
         for f in cb["passing"]:
@@ -328,15 +329,14 @@ def test_fit_range_scan_cuts_a_turnon(ROOT, fit_range, tmp_path_factory):
     base = tmp_path_factory.mktemp("scan")
     turnon = (xmin + 2.0, 4.0)  # efficiency 0.38 at the configured lower edge
     truth = syn.generate(base / "inputs", seed=54321, turnon=turnon)
-    cfg = syn.workflow_config(xmin, xmax, scan_max_unbinned=xmin + 40.0, scan_max=xmin + 60.0)
+    cfg = syn.workflow_config(xmin, xmax, scan_max=xmin + 40.0)
     step = lambda *a: subprocess.run([sys.executable, *map(str, a)], capture_output=True, text=True)  # noqa: E731
     p1 = step(REPO / "scripts" / "prepare_inputs.py", "--data", truth["files"]["data"],
               "--signal", *truth["files"]["signal"], "--categories", cfg["CATEGORIES"],
               "--exclude", cfg["EXCLUDE"], "-o", base / "inputs.root")
     assert p1.returncode == 0, p1.stderr[-2000:]
     p2 = step(REPO / "scripts" / "fit_background.py", base / "inputs.root", "-o", base / "background",
-              "--xmin", xmin, "--xmax", xmax, "--scan", "--scan-max-unbinned", cfg["SCAN_MAX_UNBINNED"],
-              "--scan-max", cfg["SCAN_MAX"], "--formats", "png")
+              "--xmin", xmin, "--xmax", xmax, "--scan", "--scan-max", cfg["SCAN_MAX"], "--formats", "png")
     (base / "fit_background.log").write_text(p2.stdout + p2.stderr)
     assert p2.returncode == 0, p2.stdout[-2000:] + p2.stderr[-2000:]
     bkg = json.loads((base / "background" / "background_fits.json").read_text())

@@ -110,7 +110,8 @@ def test_fit_recovers_truth_on_asimov_with_bin_integration(ROOT, fit_range, monk
 def test_bin_centre_evaluation_at_1gev(ROOT, fit_range):
     """Default for 1 GeV bins: the pdf is evaluated at the bin centres. This documents the size of
     the resulting approximation for 2x10^7 events: the predicted curve is essentially unchanged
-    (chi2 against the true expectation < 2 for 450 bins), while the coefficients move along a
+    (chi2 against the true expectation < 2 for the ~450 bins of the default 150-600 GeV range),
+    while the coefficients move along a
     nearly flat direction by less than 1 standard deviation."""
     h = asimov(ROOT, fit_range, integrate=True, name="asimov_cen")
     r = B.fit_function(ROOT, "dijet4", h, "t_asimov_cen")
@@ -224,10 +225,26 @@ def test_parameter_at_limit_is_reported_after_the_last_attempt(ROOT, fit_range, 
     assert not r["params_at_limit"] and B.fit_quality_ok(r)
 
 
-def test_yield_at_limit_is_reported(ROOT, fit_range):
-    """The yield parameter is also checked: an expectation outside its range is flagged."""
+def test_yield_at_limit_is_reported(ROOT, fit_range, monkeypatch):
+    """The yield parameter is also checked: a yield range that excludes the number of events in
+    the fit range makes the fitted yield end at its limit, which must be flagged."""
     h = asimov(ROOT, fit_range, integrate=True, name="asimov_norm")
     r = B.fit_function(ROOT, "dijet4", h, "t_norm")
     assert not r["params_at_limit"]
+    monkeypatch.setattr(B, "NORM_RANGE", (1.01, 1.5))  # fitted yield ~1.0 x events: below the range
+    r = B.fit_function(ROOT, "dijet4", h, "t_norm_lim")
+    assert any(n.endswith("_norm") for n in r["params_at_limit"]), r["params_at_limit"]
+    assert not B.fit_quality_ok(r)
     x = ROOT.RooRealVar("x_n", "", 0.0, 0.0, 10.0)
     assert B.at_limit_of(x) and not B.at_limit_of(ROOT.RooRealVar("y_n", "", 5.0, 0.0, 10.0))
+
+
+def test_selection_with_a_missing_order_and_a_failed_fit():
+    """An order above a gap in the fitted orders gets a distinct verdict (no F-test was possible);
+    a fit that raised an exception is marked as such."""
+    fits = [_fake("dijet3", 452, p=0.3), _fake("dijet5", 440, p=0.6),
+            B.failed_fit("ua23", 450, RuntimeError("boom"))]
+    v, default = B.select_functions(fits, 450)
+    assert default == "dijet3"
+    assert v["dijet5"].startswith("not used: the dijet4 fit is missing")
+    assert v["ua23"] == "fail: the fit raised an exception"

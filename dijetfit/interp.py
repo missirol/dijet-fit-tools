@@ -4,6 +4,8 @@ Two models are available for each parameter:
   spline : natural cubic spline through the fitted values (default). It interpolates exactly;
            the point uncertainties are not used. Outside the knots it is continued linearly.
   polN   : polynomial of order N, fitted to the points (weighted by their uncertainties).
+A model may carry 'hold_outside': [lo, hi]: outside this interval it is held constant at its
+value at the nearest end (used when a parameter is determined only at some mass points).
 The result can be evaluated in python and turned into a RooFit formula of the mass variable.
 """
 import bisect
@@ -64,6 +66,9 @@ def poly_fit(xs, ys, errs, order):
 
 
 def evaluate(model, x):
+    if model.get("hold_outside"):  # constant beyond the knots/points used (no extrapolation)
+        lo, hi = model["hold_outside"]
+        x = min(max(x, lo), hi)
     if model["kind"] == "poly":
         return float(sum(c * x ** k for k, c in enumerate(model["coefficients"])))
     xs = model["knots"]
@@ -81,6 +86,10 @@ def formula(model, var="@0"):
     """Closed-form expression of the model in the variable `var` (for a RooFormulaVar)."""
     def num(v):
         return f"({float(v)!r})"
+
+    if model.get("hold_outside"):
+        lo, hi = model["hold_outside"]
+        var = f"TMath::Min(TMath::Max({var},{num(lo)}),{num(hi)})"
 
     if model["kind"] == "poly":
         return "+".join(f"{num(c)}*pow({var},{k})" if k else num(c)

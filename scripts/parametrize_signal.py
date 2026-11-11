@@ -8,7 +8,7 @@ cubic spline (default) or a polynomial of order N ('polN'), chosen with --defaul
 and --model PARAM=MODEL. Each parameter is interpolated only through the mass points where it was
 floating in the fit: a value fixed at a limit (or because the tail lies outside the fit range)
 is set by the fitting procedure, not measured; with fewer than two floating points, all points
-are used. In the workspace the interpolated parameters are clamped (CLAMP below) so that
+are used. Beyond the outermost points used, the parameter is held constant (no extrapolation). In the workspace the interpolated parameters are clamped (CLAMP below) so that
 interpolation can never produce an invalid shape: alphaL, alphaR and nL, nR to the ranges
 allowed in the signal fits, sigma to at least 1 GeV and the yield to non-negative values; the
 mean is not clamped. Polynomial models are fits: their plots have a pull sub-pad.
@@ -241,6 +241,10 @@ def main():
                 use = list(range(len(masses)))
             models[k] = interp.build(choice[k], [masses[i] for i in use], [vals[i] for i in use],
                                      [errs[i] for i in use])
+            used = [masses[i] for i in use]
+            if used[0] > masses[0] or used[-1] < masses[-1]:
+                # determined only at some masses: constant beyond them, no extrapolation
+                models[k]["hold_outside"] = [used[0], used[-1]]
             models[k].update(points=dict(masses=masses, values=vals, errors=errs, fixed=fixed,
                                          used_for_interpolation=[masses[i] for i in use]),
                              clamp=list(CLAMP[k]))

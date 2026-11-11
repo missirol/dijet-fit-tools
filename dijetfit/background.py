@@ -30,6 +30,7 @@ BIN_INTEGRATION_ABOVE = 1.0 + 1e-6  # GeV: bins wider than this are integrated o
 BIN_INTEGRATION_PRECISION = 1e-10
 QRANGE = 50.0  # half-range of the decorrelated parameters (their errors are ~1)
 MAX_RECENTRE = 3  # re-centring attempts for a parameter that ends at its limit
+NORM_RANGE = (0.5, 1.5)  # allowed range of the yield, in units of the events in the fit range
 
 _X = f"(@0/{SQRTS!r})"
 
@@ -67,10 +68,9 @@ FAMILY_FORMULAS = {
     "ua2": "x^(-p2) exp(-p1 x - p3 x^2 - p4 x^3 [- p5 x^4])",
 }
 ORDERS = (3, 4, 5, 6)  # number of parameters including the normalisation
-DEFAULT_ORDERS = (3, 4, 5, 6)
 
 
-def function_names(families=None, orders=DEFAULT_ORDERS):
+def function_names(families=None, orders=ORDERS):
     return [f"{fam}{n}" for fam in (families or FAMILIES) for n in orders]
 
 
@@ -271,7 +271,7 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
         arglist.add(p)
     pdf = make_pdf(ROOT, f"{name}_{tag}", name, arglist, formula)
     ntot = float(n.sum())
-    norm = ROOT.RooRealVar(f"{name}_{tag}_norm", "N_{bkg}", ntot, 0.5 * ntot, 1.5 * ntot)
+    norm = ROOT.RooRealVar(f"{name}_{tag}_norm", "N_{bkg}", ntot, NORM_RANGE[0] * ntot, NORM_RANGE[1] * ntot)
     model = ROOT.RooExtendPdf(f"{name}_{tag}_ext", "", pdf, norm)
     data = ROOT.RooDataHist(f"data_{tag}", "", ROOT.RooArgList(x), hist)
 
@@ -282,8 +282,10 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
     # A shape parameter that ends at its limit: re-centre its range and fit again (at most
     # MAX_RECENTRE times). The at-limit check below is made on the result of the last fit, so a
     # parameter that still ends at a limit after the last attempt is reported as such.
+    texts = []  # RooFit/Minuit output of every attempt (messages are counted over all of them)
     with capture_output() as log:
         res = model.fitTo(data, *opts)
+    texts.append(log["text"])
     for _ in range(MAX_RECENTRE):
         hit = [p for p in params if at_limit_of(p)]
         if not hit:
@@ -292,7 +294,9 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
             p.setRange(p.getVal() - QRANGE, p.getVal() + QRANGE)
         with capture_output() as log:
             res = model.fitTo(data, *opts)
-    nwarn, nerr = count_messages(log["text"])
+        texts.append(log["text"])
+    all_text = "\n".join(texts)
+    nwarn, nerr = count_messages(all_text)
 
     # expected events per bin and the goodness of fit
     nu = expected_counts(ROOT, x, pdf, norm.getVal(), lo, hi, integrate)
@@ -314,7 +318,7 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
         name=name, family=parse_function(name)[0], npar=parse_function(name)[1],
         status=int(res.status()), cov_qual=int(res.covQual()), edm=float(res.edm()),
         min_nll=float(res.minNll()), chi2=chi2, ndf=int(ndf), pvalue=float(pvalue),
-        n_warnings=nwarn, n_errors=nerr, messages=message_summary(log["text"]),
+        n_warnings=nwarn, n_errors=nerr, messages=message_summary(all_text), n_attempts=len(texts),
         params_at_limit=at_limit,
         params={f"p{k}": dict(value=p.getVal(), error=p.getError(), min=p.getMin(),
                               max=p.getMax()) for k, p in enumerate(params, start=1)},
@@ -325,6 +329,17 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
         params_original=original_params(M, params, res),
         _keep=(x, params, pdf, norm, model, data, res),
     )
+
+
+def failed_fit(name, nbins, exc):
+    """Result record for a fit that could not be performed (an exception was raised)."""
+    fam, npar = parse_function(name)
+    return dict(name=name, family=fam, npar=npar, status=-1, cov_qual=-1, edm=float("nan"),
+                min_nll=float("nan"), chi2=float("inf"), ndf=int(nbins - npar), pvalue=0.0,
+                n_warnings=0, n_errors=1, messages=[f"{type(exc).__name__}: {exc}"],
+                params_at_limit=[], params={}, norm=dict(value=float("nan"), error=float("nan")),
+                expected=[], curve=([], []), bin_integration=False, formula=None, basis=None,
+                params_original={}, exception=f"{type(exc).__name__}: {exc}")
 
 
 def original_params(M, params, res):
@@ -403,7 +418,9 @@ def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, m
         if top is not None:
             family_max[fam] = top
         for f in ff:
-            if not fit_quality_ok(f):
+            if f.get("exception"):
+                verdict[f["name"]] = "fail: the fit raised an exception"
+            elif not fit_quality_ok(f):
                 why = []
                 if f["status"] != 0:
                     why.append(f"status {f['status']}")
@@ -415,7 +432,11 @@ def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, m
             elif f["pvalue"] <= pvalue_threshold:
                 verdict[f["name"]] = f"fail: p-value {f['pvalue']:.3g}"
             elif f["npar"] > top["npar"]:
-                verdict[f["name"]] = f"not used: above the F-test maximum ({top['name']})"
+                if top["npar"] + 1 not in by_npar:  # e.g. --functions dijet3 dijet5
+                    verdict[f["name"]] = (f"not used: the {fam}{top['npar'] + 1} fit is missing, so no "
+                                          f"F-test beyond {top['name']}")
+                else:
+                    verdict[f["name"]] = f"not used: above the F-test maximum ({top['name']})"
             else:
                 candidates.append(f)
     if not family_max:

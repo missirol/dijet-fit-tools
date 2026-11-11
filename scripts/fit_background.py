@@ -18,23 +18,21 @@ RooFit/Minuit warnings and errors are counted and reported, but do not fail a fi
 
 The fit range [--xmin, --xmax] is common to all categories and must be given explicitly (the
 script has no built-in range). With --scan, the lower edge is chosen automatically, starting
-from --xmin, following this priority (see dijetfit/scan.py):
-  1. original binning: XMIN, XMIN + --scan-step, ... up to --scan-max-unbinned, until every
-     category has at least one passing function;
-  2. if some categories still fail at that XMIN: rebin only the failing categories, trying the
-     factors --rebin-factors [default 2 5 10] in increasing order, keeping the smallest that
-     works (a category for which none works goes back to no rebinning);
-  3. if some categories still fail: raise XMIN further (by --scan-step) up to --scan-max; at
-     every new XMIN each category starts again from no rebinning and keeps the smallest rebin
-     factor that works.
---scan-max-unbinned and --scan-max are required with --scan.
-NOTE: build_workspace.py refuses categories with bins wider than the original 1 GeV, because
-Combine evaluates the pdfs at the bin centres (see docs/OUTPUT_FORMAT.md); rebinned results are
-kept for inspection.
+from --xmin and raised in steps of --scan-step up to --scan-max, until every category has at
+least one passing function (see dijetfit/scan.py).
+
+Rebinning is off by default, because build_workspace.py refuses categories with bins wider than
+the original 1 GeV (Combine evaluates the pdfs at the bin centres; see docs/OUTPUT_FORMAT.md).
+It can be switched on for studies with --rebin-factors (e.g. 2 5 10): the lower edge is then
+raised without rebinning only up to --scan-max-unbinned; there, the failing categories are
+rebinned with the smallest factor that works; beyond, at every new lower edge each category
+starts again from no rebinning. --rebin fixes the rebinning of given categories without a scan.
 
 If a category has no passing function, the script stops with an error, unless
 --drop-failing-categories is given: such categories are then left out of the output (and of all
 later steps) and listed, with the reason, under "dropped_categories" in background_fits.json.
+With --scan, the lower edge is then the lowest one with the most passing categories, so that a
+category that never passes does not raise the lower edge of the others.
 Rebinning merges consecutive bins starting from XMIN (the last bin may be narrower).
 Every decision is logged in the output JSON and in the summary.
 
@@ -63,7 +61,13 @@ def fit_category(ROOT, raw, cat, xmin, xmax, rebin, functions, sel):
     """Fit all functions; returns (histogram, fits, passing) with passing = [default] +
     alternates, in this order (empty if no function is acceptable)."""
     h = window_hist(ROOT, raw, xmin, xmax, rebin, name=f"{cat}_data")
-    fits = [B.fit_function(ROOT, f, h, cat) for f in functions]
+    fits = []
+    for f in functions:
+        try:
+            fits.append(B.fit_function(ROOT, f, h, cat))
+        except Exception as exc:  # e.g. a numerical failure of one function: that fit fails
+            print(f"WARNING: {cat}: fit of {f} raised {type(exc).__name__}: {exc}", file=sys.stderr)
+            fits.append(B.failed_fit(f, h.GetNbinsX(), exc))
     verdict, default = B.select_functions(fits, h.GetNbinsX(), **sel)
     for f in fits:
         f["verdict"] = verdict[f["name"]]
@@ -112,9 +116,11 @@ def main():
                     help="choose XMIN (and rebinning) automatically, starting from --xmin")
     ap.add_argument("--scan-step", type=float, default=5.0, help="step of the scan [GeV] (default: 5)")
     ap.add_argument("--scan-max-unbinned", type=float,
-                    help="largest XMIN tried before rebinning (required with --scan) [GeV]")
+                    help="with --rebin-factors: largest XMIN tried before rebinning [GeV] "
+                         "(default: --scan-max)")
     ap.add_argument("--scan-max", type=float, help="largest XMIN tried at all (required with --scan) [GeV]")
-    ap.add_argument("--rebin-factors", type=int, nargs="+", default=[2, 5, 10])
+    ap.add_argument("--rebin-factors", type=int, nargs="*", default=[],
+                    help="with --scan: rebin factors to try (default: none, i.e. no rebinning)")
     ap.add_argument("--drop-failing-categories", action="store_true",
                     help="leave out categories without a passing function instead of stopping")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
@@ -124,8 +130,15 @@ def main():
         B.parse_function(f)
     if args.xmax <= args.xmin:
         sys.exit(f"ERROR: empty fit range [{args.xmin:g}, {args.xmax:g}]")
-    if args.scan and (args.scan_max_unbinned is None or args.scan_max is None):
-        sys.exit("ERROR: --scan needs --scan-max-unbinned and --scan-max")
+    if args.scan and args.scan_max is None:
+        sys.exit("ERROR: --scan needs --scan-max")
+    if args.scan and args.scan_max_unbinned is None:
+        args.scan_max_unbinned = args.scan_max
+    if args.scan and args.rebin:
+        sys.exit("ERROR: --rebin cannot be combined with --scan (the scan chooses the rebinning; "
+                 "use --rebin-factors)")
+    if args.rebin_factors and not args.scan:
+        sys.exit("ERROR: --rebin-factors only applies with --scan")
     if args.scan and not (args.xmin <= args.scan_max_unbinned <= args.scan_max < args.xmax):
         sys.exit("ERROR: need XMIN <= --scan-max-unbinned <= --scan-max < XMAX")
 
@@ -188,7 +201,7 @@ def main():
 
         xmin, rebin, results, failing = scan_fit_range(
             evaluate, cats, args.xmin, args.scan_step, args.scan_max_unbinned, args.scan_max,
-            args.rebin_factors, log)
+            args.rebin_factors, log, drop_failing=args.drop_failing_categories)
         if failing:
             log(f"WARNING: no acceptable configuration found up to xmin = {xmin:g} GeV; "
                 f"failing categories: {', '.join(failing)}")
@@ -219,6 +232,8 @@ def main():
                   "build_workspace.py will refuse it (Combine evaluates the pdfs at the bin centres)",
                   file=sys.stderr)
         for f in fits:
+            if f.get("exception"):
+                continue  # nothing to plot
             labels = [label[c],
                       f"status {f['status']}, covQual {f['cov_qual']}",
                       f"#chi^{{2}}/ndf = {f['chi2']:.1f}/{f['ndf']}, p = {f['pvalue']:.3g}",
@@ -227,10 +242,10 @@ def main():
             fit_plot(ROOT, str(outdir / "plots" / f"bkg_{c}_{f['name']}"), args.formats, h,
                      f["expected"], f["curve"], labels, logy=True, data_label="data_obs",
                      fit_label=f"{f['name']} fit")
-        best = next((f for f in fits if passing and f["name"] == passing[0]), None)
+        default = next((f for f in fits if passing and f["name"] == passing[0]), None)
         entry = dict(
             rebin=rebin[c], bin_edges=edges, binning=binning_label(edges),
-            n_data=h.Integral(), passing=passing, best=best["name"] if best else None,
+            n_data=h.Integral(), passing=passing, default=default["name"] if default else None,
             fits={f["name"]: public(f) for f in fits})
         if not passing and args.drop_failing_categories:
             entry["reason"] = "no passing background function"
@@ -240,7 +255,7 @@ def main():
             payload["categories"][c] = entry
         md += [f"## {c}\n", f"Binning: {binning_label(edges)}"
                + (f" (**rebinned by {rebin[c]}**)" if rebin[c] != 1 else "") + "  ",
-               f"RooMultiPdf: {', '.join(passing) or 'NONE'} (default: {best['name'] if best else '-'})\n",
+               f"RooMultiPdf: {', '.join(passing) or 'NONE'} (default: {default['name'] if default else '-'})\n",
                "| function | status | covQual | chi2/ndf | p-value | F-test p vs next order | "
                "warn/err | verdict |", "|---|---|---|---|---|---|---|---|"]
         for f in fits:
