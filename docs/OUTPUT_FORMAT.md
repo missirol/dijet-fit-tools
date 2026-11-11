@@ -29,7 +29,7 @@ parameter is shared between them, except the signal mass `MH`.
 | `ZprimeQQ_CAT_mean`, `_sigma`, `_alphaL`, `_nL`, `_alphaR`, `_nR` | `RooFormulaVar(MH)` | signal shape parameters as functions of `MH` |
 | `ZprimeQQ_CAT_norm` | `RooFormulaVar(MH)` | expected signal yield **inside the fit range** for σ(pp→Z'→qq) = **1 nb** and the luminosity given to `prepare_inputs.py` (default 680000 nb⁻¹) |
 | `bkg_CAT` | `RooMultiPdf` (Combine) | background model: discrete choice among the accepted functions |
-| `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default = the function with the highest goodness-of-fit p-value |
+| `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default (index 0) = the F-test-selected family maximum with the largest goodness-of-fit p-value |
 | `bkg_CAT_<func>` | `RooGenericPdf` | each accepted background function (e.g. `bkg_CAT_dijet5`) |
 | `<func>_p<k>_CAT` | `RooRealVar` | parameters of background function `<func>` (floating, set to the fitted values) |
 | `bkg_CAT_norm` | `RooRealVar` | background yield in the fit range (floating; set to the fitted value of the default function) |
@@ -48,14 +48,17 @@ Notes:
   the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
   covered by every category: no extrapolation.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
-  the families `dijet`, `moddijet` and `ua2` with 3–5 parameters (the number includes the
+  the families `dijet`, `moddijet` and `ua2` with 3–6 parameters (the number includes the
   normalisation). The formulas are written in a numerically decorrelated basis: the fitted
   parameters `<func>_p<k>_CAT` are linear combinations of the parameters of the published form,
   and have uncertainties of order 1. The function family is unchanged; the coefficients of the
   published form are in `background_fits.json` (`params_original`).
-* **Background functions in `bkg_CAT`**: a fit is acceptable if it has status 0, covariance
-  quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05; in each family, the
-  acceptable function with the fewest parameters is used (at most one function per family).
+* **Background functions in `bkg_CAT`** (at most 5): a fit is acceptable if it has status 0,
+  covariance quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05. In each
+  family, standard Fisher F-tests (threshold 0.05), starting from the lowest acceptable order,
+  give the highest order. The default is the family maximum with the largest p-value; up to 4
+  alternates are the other acceptable functions of order at most their family's maximum,
+  ranked by p-value. `pdfindex_CAT` index 0 is the default, then the alternates in this order.
 * The background pdfs carry their own numerical integrator settings (adaptive Gauss–Kronrod,
   relative precision 1e-10), which the fits need for these sample sizes (~2×10⁷ events/category).
 * **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in

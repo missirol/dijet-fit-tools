@@ -97,9 +97,9 @@ def expected_counts_of_fit(ROOT, fit, edges, tag):
 def test_background_closure(ROOT, run):
     """The fit of the generating function (dijet4) reproduces the true expected spectrum in the
     fit range within the statistical precision, in every category; and the selection never
-    rejects it for its fit quality or goodness of fit. (It is not used if a member of its family
-    with fewer parameters is acceptable, e.g. over a short fit range; at least one function must
-    pass, and at most one per family.)
+    rejects it for its fit quality or goodness of fit. The RooMultiPdf follows the F-test
+    selection: a default (the family maximum with the largest p-value) and up to 4 alternates,
+    none above its family's F-test maximum.
 
     Other functions are only required to describe the data, which is what the selection tests:
     a passing function may still differ from the truth by more than the statistics. That is the
@@ -113,10 +113,18 @@ def test_background_closure(ROOT, run):
         assert all(f["n_errors"] == 0 and f["status"] == 0 for f in cb["fits"].values())
         assert cb["passing"], cat
         gen = cb["fits"]["dijet4"]
-        assert gen["verdict"] == "pass" or gen["verdict"].startswith("not used: dijet3"), (cat, gen["verdict"])
-        families = [B.parse_function(f)[0] for f in cb["passing"]]
-        assert len(families) == len(set(families)), cb["passing"]
-        assert cb["best"] == max(cb["passing"], key=lambda f: cb["fits"][f]["pvalue"])
+        assert not gen["verdict"].startswith("fail"), (cat, gen["verdict"])
+        # RooMultiPdf: default + at most 4 alternates; default = the family maximum with the largest
+        # p-value; alternates ordered by p-value; nothing above a family's F-test maximum
+        assert 1 <= len(cb["passing"]) <= 5 and cb["best"] == cb["passing"][0]
+        maxima = {cb["fits"][f]["ftest_max"] for f in cb["fits"]} - {None}
+        assert cb["best"] in maxima
+        assert cb["fits"][cb["best"]]["pvalue"] == max(cb["fits"][f]["pvalue"] for f in maxima)
+        alt_p = [cb["fits"][f]["pvalue"] for f in cb["passing"][1:]]
+        assert alt_p == sorted(alt_p, reverse=True)
+        for f in cb["passing"]:
+            top = cb["fits"][f]["ftest_max"]
+            assert cb["fits"][f]["npar"] <= cb["fits"][top]["npar"], (f, top)
         nu_true = syn.background_expected(cat)[sel]
         for name in sorted(set(cb["passing"]) | {"dijet4"}):
             fit = cb["fits"][name]

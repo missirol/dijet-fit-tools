@@ -6,11 +6,15 @@ in the fit range [XMIN, XMAX] (extended binned maximum likelihood). A fit is acc
   - the fit has status 0 and a full, accurate covariance matrix (covQual 3),
   - no parameter is at its limit,
   - the goodness-of-fit p-value (Poisson likelihood-ratio chi2) exceeds --pvalue-threshold.
-In every family (dijet, moddijet, ua2) the acceptable function with the fewest parameters
-*passes*; acceptable functions with more parameters in the same family are not used. The
-passing functions of a category enter its RooMultiPdf; the one with the highest p-value is the
-default. RooFit/Minuit warnings and errors are counted and reported, but do not fail a fit.
-The F-test p-value against the next order of the family is reported for information only.
+The functions of the category's RooMultiPdf are chosen with standard Fisher F-tests (see
+dijetfit/background.py, select_functions):
+  - in every family (dijet, moddijet, ua2), starting from the lowest acceptable order, move to
+    the next order while it is significantly better (F-test p-value < --ftest-threshold) and
+    its fit is acceptable: this gives the family's highest order; the family contributes its
+    acceptable orders up to that one;
+  - default: among the highest orders of the families, the one with the largest p-value;
+  - alternates: the other contributed functions ranked by p-value, at most --max-alternates.
+RooFit/Minuit warnings and errors are counted and reported, but do not fail a fit.
 
 The fit range [--xmin, --xmax] is common to all categories and must be given explicitly (the
 script has no built-in range). With --scan, the lower edge is chosen automatically, starting
@@ -55,13 +59,17 @@ def list_categories(tfile):
     return sorted(k.GetName() for k in tfile.GetListOfKeys() if k.GetClassName().startswith("TDirectory"))
 
 
-def fit_category(ROOT, raw, cat, xmin, xmax, rebin, functions, pthr):
+def fit_category(ROOT, raw, cat, xmin, xmax, rebin, functions, sel):
+    """Fit all functions; returns (histogram, fits, passing) with passing = [default] +
+    alternates, in this order (empty if no function is acceptable)."""
     h = window_hist(ROOT, raw, xmin, xmax, rebin, name=f"{cat}_data")
     fits = [B.fit_function(ROOT, f, h, cat) for f in functions]
-    verdict = B.select_functions(fits, h.GetNbinsX(), pthr)
+    verdict, default = B.select_functions(fits, h.GetNbinsX(), **sel)
     for f in fits:
         f["verdict"] = verdict[f["name"]]
-    passing = [f["name"] for f in fits if f["verdict"] == "pass"]
+    alternates = sorted((f for f in fits if f["verdict"].startswith("pass (alternate")),
+                        key=lambda f: int(f["verdict"].split()[-1].rstrip(")")))
+    passing = ([default] + [f["name"] for f in alternates]) if default else []
     return h, fits, passing
 
 
@@ -93,7 +101,13 @@ def main():
     ap.add_argument("--categories", nargs="*", help="only these categories (default: all)")
     ap.add_argument("--functions", nargs="+", default=B.function_names(),
                     help=f"candidate functions (default: {' '.join(B.function_names())})")
-    ap.add_argument("--pvalue-threshold", type=float, default=0.05)
+    ap.add_argument("--pvalue-threshold", type=float, default=0.05,
+                    help="minimum goodness-of-fit p-value of an acceptable fit (default: 0.05)")
+    ap.add_argument("--ftest-threshold", type=float, default=0.05,
+                    help="F-test p-value below which the next order is significantly better "
+                         "(default: 0.05)")
+    ap.add_argument("--max-alternates", type=int, default=4,
+                    help="maximum number of alternate functions in the RooMultiPdf (default: 4)")
     ap.add_argument("--scan", action="store_true",
                     help="choose XMIN (and rebinning) automatically, starting from --xmin")
     ap.add_argument("--scan-step", type=float, default=5.0, help="step of the scan [GeV] (default: 5)")
@@ -133,12 +147,14 @@ def main():
     outdir = Path(args.outdir)
     (outdir / "plots").mkdir(parents=True, exist_ok=True)
     pthr = args.pvalue_threshold
+    sel = dict(pvalue_threshold=pthr, ftest_threshold=args.ftest_threshold,
+               max_alternates=args.max_alternates)
 
     def run(xmin, which, factors):
         res = {}
         for c in which:
             res[c] = fit_category(ROOT, raw[c], c, xmin, args.xmax, factors[c], args.functions,
-                                  pthr)
+                                  sel)
         return res
 
     scan_log = []
@@ -166,7 +182,7 @@ def main():
 
         def evaluate(x, c, fac):
             if (x, c, fac) not in cache:
-                cache[(x, c, fac)] = fit_category(ROOT, raw[c], c, x, args.xmax, fac, args.functions, pthr)
+                cache[(x, c, fac)] = fit_category(ROOT, raw[c], c, x, args.xmax, fac, args.functions, sel)
             res = cache[(x, c, fac)]
             return res, bool(res[2])
 
@@ -180,16 +196,19 @@ def main():
 
     # ---- plots and outputs for the final configuration
     payload = dict(fit_range=[xmin, args.xmax], pvalue_threshold=pthr,
-                   selection="per family: the acceptable function with the fewest parameters; "
-                             "default: the selected function with the highest p-value",
+                   ftest_threshold=args.ftest_threshold, max_alternates=args.max_alternates,
+                   selection="per family, F-tests from the lowest acceptable order give the highest "
+                             "order; default: the family maximum with the largest p-value; "
+                             "alternates: the other acceptable orders up to the family maxima, by p-value",
                    functions=args.functions,
                    function_definitions={f: B.describe(f) for f in args.functions},
                    integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={},
                    dropped_categories={})
     md = ["# Background fits\n", f"Fit range: [{xmin:g}, {args.xmax:g}] GeV  ",
           f"Acceptable fit: status 0, covQual 3, no parameter at limit, p > {pthr:g}. Per family, "
-          "the acceptable function with the fewest parameters passes; the passing function with "
-          "the highest p-value is the default.\n", "## Scan / configuration log\n",
+          f"F-tests (threshold {args.ftest_threshold:g}) from the lowest acceptable order give the "
+          "highest order; default: the family maximum with the largest p-value; up to "
+          f"{args.max_alternates} alternates ranked by p-value.\n", "## Scan / configuration log\n",
           "```", *scan_log, "```\n"]
     label = category_labels(cats)
     for c in cats:
@@ -208,8 +227,7 @@ def main():
             fit_plot(ROOT, str(outdir / "plots" / f"bkg_{c}_{f['name']}"), args.formats, h,
                      f["expected"], f["curve"], labels, logy=True, data_label="data_obs",
                      fit_label=f"{f['name']} fit")
-        best = max((f for f in fits if f["name"] in passing), key=lambda f: f["pvalue"],
-                   default=None)
+        best = next((f for f in fits if passing and f["name"] == passing[0]), None)
         entry = dict(
             rebin=rebin[c], bin_edges=edges, binning=binning_label(edges),
             n_data=h.Integral(), passing=passing, best=best["name"] if best else None,
@@ -222,8 +240,8 @@ def main():
             payload["categories"][c] = entry
         md += [f"## {c}\n", f"Binning: {binning_label(edges)}"
                + (f" (**rebinned by {rebin[c]}**)" if rebin[c] != 1 else "") + "  ",
-               f"Passing: {', '.join(passing) or 'NONE'}; best p-value: {best['name'] if best else '-'}\n",
-               "| function | status | covQual | chi2/ndf | p-value | F-test p vs next order (info) | "
+               f"RooMultiPdf: {', '.join(passing) or 'NONE'} (default: {best['name'] if best else '-'})\n",
+               "| function | status | covQual | chi2/ndf | p-value | F-test p vs next order | "
                "warn/err | verdict |", "|---|---|---|---|---|---|---|---|"]
         for f in fits:
             fp = f.get("ftest_next")

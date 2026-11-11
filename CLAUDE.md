@@ -16,10 +16,12 @@
     Raise the lower edge in 5 GeV steps
     if background fits fail; rebin only if needed, per category, and log it. Drop M200 if the
     lower edge goes above 190 GeV.
-  - Background fits must reach p > 5% (plus status 0, covQual 3, no parameter at a limit). Per
-    function family, the acceptable function with the fewest parameters goes into the
-    RooMultiPdf; the one with the highest p-value is the default. RooFit warnings do not by
-    themselves fail a fit; no cut on pulls.
+  - Background fits must reach p > 5% (plus status 0, covQual 3, no parameter at a limit);
+    only such fits are used. Per family (3-6 parameters), standard F-tests (5%) from the lowest
+    acceptable order give the highest order. Default = family maximum with the largest p-value;
+    up to 4 alternates = other acceptable orders up to their family maximum, ranked by p-value
+    (RooMultiPdf: up to 5 functions). RooFit warnings do not by themselves fail a fit; no cut
+    on pulls.
   - Yields always refer to the fit range.
   - Signal fits: weighted templates with SumW2 errors by default; the MC-counts approach
     ("--weights counts") stays available as an option.

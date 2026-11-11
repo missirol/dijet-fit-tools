@@ -33,7 +33,8 @@ def asimov(ROOT, fit_range, width=1.0, integrate=False, name="asimov"):
 
 
 def test_function_names_and_parsing():
-    assert B.function_names(["dijet"]) == ["dijet3", "dijet4", "dijet5"]
+    assert B.function_names(["dijet"]) == ["dijet3", "dijet4", "dijet5", "dijet6"]
+    assert B.function_names(["ua2"], orders=(3, 4)) == ["ua23", "ua24"]
     assert B.parse_function("ua25") == ("ua2", 5)
     assert B.terms_of("dijet4") == ["ln1mx", "L1", "L2"]
     for bad in ("dijet2", "dijet7", "expo3"):
@@ -155,25 +156,52 @@ def _fake(name, chi2, ok=True, p=0.5):
                 cov_qual=3, params_at_limit=[])
 
 
-def test_ftest_and_selection():
+def test_ftest():
     nb = 450
-    # adding one parameter improves chi2 by 0.5: not significant (F-test reported for information)
+    # adding one parameter improves chi2 by 0.5: not significant; by 70: very significant
     assert B.ftest(_fake("dijet4", 450.5), _fake("dijet5", 450.0), nb) > 0.4
     assert B.ftest(_fake("dijet4", 520.0), _fake("dijet5", 450.0), nb) < 1e-10
-    fits = [_fake("dijet3", 900, p=1e-20), _fake("dijet4", 455, p=0.4), _fake("dijet5", 454.8, p=0.4),
-            _fake("ua23", 470, p=0.2, ok=False), _fake("ua24", 460, p=0.3), _fake("ua25", 459, p=0.3),
-            _fake("moddijet3", 480, p=0.06), _fake("moddijet4", 440, p=0.8)]
-    v = B.select_functions(fits, nb, 0.05)
-    # per family: the acceptable function with the fewest parameters
+    assert B.ftest(_fake("dijet4", 450.0), _fake("dijet5", 451.0), nb) == 1.0  # worse: no gain
+
+
+def test_selection_follows_standard_ftest_sequence():
+    nb = 450
+    fits = [
+        # dijet: 3 fails p; 4 acceptable; 5 significantly better than 4 and acceptable; 6 not
+        # significantly better than 5 -> family maximum dijet5
+        _fake("dijet3", 900, p=1e-20), _fake("dijet4", 470, p=0.06), _fake("dijet5", 440, p=0.6),
+        _fake("dijet6", 439.8, p=0.6),
+        # moddijet: 3 acceptable, 4 not significantly better -> maximum moddijet3 (4 not used even
+        # though its p-value is larger)
+        _fake("moddijet3", 452, p=0.3), _fake("moddijet4", 451.5, p=0.31),
+        # ua2: 3 fails quality; 4 acceptable; 5 significantly better but its p-value fails -> stop
+        _fake("ua23", 470, p=0.2, ok=False), _fake("ua24", 470, p=0.08), _fake("ua25", 430, p=0.04),
+    ]
+    v, default = B.select_functions(fits, nb, 0.05, 0.05, 4)
     assert v["dijet3"].startswith("fail: p-value")
-    assert v["dijet4"] == "pass"
-    assert v["dijet5"] == "not used: dijet4 has fewer parameters"
-    assert v["ua23"].startswith("fail: status")
-    assert v["ua24"] == "pass" and v["ua25"].startswith("not used: ua24")
-    # moddijet3 passes p > 0.05 although the next order is much better (by design)
-    assert v["moddijet3"] == "pass" and v["moddijet4"].startswith("not used: moddijet3")
-    assert sorted(n for n, x in v.items() if x == "pass") == ["dijet4", "moddijet3", "ua24"]
-    assert fits[6]["ftest_next"] < 1e-6  # F-test vs moddijet4 stored for information
+    assert v["dijet6"] == "not used: above the F-test maximum (dijet5)"
+    assert v["moddijet4"] == "not used: above the F-test maximum (moddijet3)"
+    assert v["ua23"].startswith("fail: status") and v["ua25"].startswith("fail: p-value")
+    f = {x["name"]: x for x in fits}
+    assert f["dijet4"]["ftest_next"] < 0.05 and f["dijet5"]["ftest_next"] > 0.05
+    assert f["dijet3"]["ftest_max"] == "dijet5" and f["ua24"]["ftest_max"] == "ua24"
+    # default: the family maximum with the largest p-value (dijet5 0.6 > moddijet3 0.3 > ua24 0.08)
+    assert default == "dijet5" and v["dijet5"] == "pass (default)"
+    # alternates: the other contributed functions (orders up to the family maxima) by p-value
+    assert v["moddijet3"] == "pass (alternate 1)"
+    assert v["ua24"] == "pass (alternate 2)"
+    assert v["dijet4"] == "pass (alternate 3)"
+
+
+def test_selection_caps_alternates_and_handles_no_acceptable_fit():
+    nb = 450
+    fits = [_fake(f"{fam}3", 450, p=p) for fam, p in (("dijet", 0.9), ("moddijet", 0.5), ("ua2", 0.4))]
+    fits += [_fake("dijet4", 449.9, p=0.88), _fake("moddijet4", 449.9, p=0.45)]
+    v, default = B.select_functions(fits, nb, 0.05, 0.05, max_alternates=1)
+    assert default == "dijet3"
+    assert v["moddijet3"] == "pass (alternate 1)" and v["ua23"] == "not used: beyond the 1 alternates"
+    v, default = B.select_functions([_fake("dijet3", 900, p=1e-9)], nb)
+    assert default is None and v["dijet3"].startswith("fail")
 
 
 def test_parameter_at_limit_is_reported_after_the_last_attempt(ROOT, fit_range, monkeypatch):

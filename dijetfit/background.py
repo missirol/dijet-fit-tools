@@ -9,7 +9,8 @@ standard ones of dijet resonance searches, written with x = m / sqrt(s):
   ua2      (UA2/CDF)      f = x^(-p2) exp(-p1 x - p3 x^2 - p4 x^3)
 
 <family><N> denotes N parameters *including* the normalisation (the usual convention in CMS
-papers), e.g. dijet4 = the 4-parameter dijet function (p1, p2, p3 + yield).
+papers), e.g. dijet4 = the 4-parameter dijet function (p1, p2, p3 + yield). Orders 3-6 are
+available (the 6-parameter forms add p5 ln^3 x, resp. p5 x^4).
 
 For numerical stability the polynomial in ln x (resp. in x) is written in the centred
 variable L = ln(m / M0) (resp. z = m / M0 - 1), with the reference mass M0 = the geometric
@@ -66,7 +67,7 @@ FAMILY_FORMULAS = {
     "ua2": "x^(-p2) exp(-p1 x - p3 x^2 - p4 x^3 [- p5 x^4])",
 }
 ORDERS = (3, 4, 5, 6)  # number of parameters including the normalisation
-DEFAULT_ORDERS = (3, 4, 5)  # the 6-parameter functions are available on request
+DEFAULT_ORDERS = (3, 4, 5, 6)
 
 
 def function_names(families=None, orders=DEFAULT_ORDERS):
@@ -360,25 +361,47 @@ def ftest(fit_lo, fit_hi, nbins):
     return float(1.0 - ROOT.Math.fdistribution_cdf(F, dp, ndf_hi))
 
 
-def select_functions(fits, nbins, pvalue_threshold=0.05):
-    """Decide which fits enter the RooMultiPdf.
+def acceptable(fit, pvalue_threshold):
+    """A valid background fit: status 0, full covariance matrix (covQual 3), no parameter at its
+    limit, and goodness-of-fit p-value above the threshold."""
+    return fit_quality_ok(fit) and fit["pvalue"] > pvalue_threshold
 
-    A fit is acceptable if (i) fit status 0, full covariance matrix (covQual 3) and no parameter
-    at its limit, and (ii) goodness-of-fit p-value > pvalue_threshold. In every family, the
-    acceptable function with the fewest parameters is selected ('pass'); acceptable functions
-    with more parameters in the same family are not used. The default function of the
-    RooMultiPdf (chosen by the caller) is the selected one with the highest p-value.
 
-    For information, the Fisher F-test p-value of each function against the next order of its
-    family is stored as fit['ftest_next'] (not used in the selection).
-    Returns {name: 'pass' or the reason why the function is not used}."""
-    verdict = {}
-    for fam in {f["family"] for f in fits}:
+def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, max_alternates=4):
+    """Choose the functions of the RooMultiPdf: a default and up to `max_alternates` alternates.
+
+    1. Only acceptable fits are used (see `acceptable`; p-value > pvalue_threshold).
+    2. In every family, a sequence of standard Fisher F-tests fixes the highest order: start
+       from the lowest acceptable order; move to the next order if it is significantly better
+       (F-test p-value < ftest_threshold) and its own fit is acceptable; otherwise stop. The
+       family contributes its acceptable orders from the lowest one up to this highest order.
+    3. Default: among the highest orders of the families, the one with the largest p-value.
+    4. Alternates: the other contributed functions, ranked by p-value, at most max_alternates.
+
+    Every fit gets fit['ftest_next'] (F-test p-value against the next order of its family,
+    when both fits have a good quality) and fit['ftest_max'] (the highest order of its family).
+    Returns (verdict {name: 'pass (default)', 'pass (alternate k)' or the reason it is not used},
+    default name or None)."""
+    verdict, candidates, family_max = {}, [], {}
+    for fam in sorted({f["family"] for f in fits}):
         ff = sorted((f for f in fits if f["family"] == fam), key=lambda f: f["npar"])
-        for i, f in enumerate(ff):
-            nxt = next((g for g in ff[i + 1:] if fit_quality_ok(g)), None)
-            f["ftest_next"] = ftest(f, nxt, nbins) if (nxt and fit_quality_ok(f)) else None
-        selected = None
+        by_npar = {f["npar"]: f for f in ff}
+        for f in ff:
+            nxt = by_npar.get(f["npar"] + 1)
+            f["ftest_next"] = (ftest(f, nxt, nbins) if nxt and fit_quality_ok(f) and fit_quality_ok(nxt)
+                               else None)
+        start = next((f for f in ff if acceptable(f, pvalue_threshold)), None)
+        top = start
+        while top is not None:
+            nxt = by_npar.get(top["npar"] + 1)
+            if (nxt is None or top["ftest_next"] is None or top["ftest_next"] >= ftest_threshold
+                    or not acceptable(nxt, pvalue_threshold)):
+                break
+            top = nxt
+        for f in ff:
+            f["ftest_max"] = top["name"] if top else None
+        if top is not None:
+            family_max[fam] = top
         for f in ff:
             if not fit_quality_ok(f):
                 why = []
@@ -391,9 +414,16 @@ def select_functions(fits, nbins, pvalue_threshold=0.05):
                 verdict[f["name"]] = "fail: " + ", ".join(why)
             elif f["pvalue"] <= pvalue_threshold:
                 verdict[f["name"]] = f"fail: p-value {f['pvalue']:.3g}"
-            elif selected is None:
-                selected = f["name"]
-                verdict[f["name"]] = "pass"
+            elif f["npar"] > top["npar"]:
+                verdict[f["name"]] = f"not used: above the F-test maximum ({top['name']})"
             else:
-                verdict[f["name"]] = f"not used: {selected} has fewer parameters"
-    return verdict
+                candidates.append(f)
+    if not family_max:
+        return verdict, None
+    default = max(family_max.values(), key=lambda f: f["pvalue"])
+    verdict[default["name"]] = "pass (default)"
+    others = sorted((f for f in candidates if f is not default), key=lambda f: -f["pvalue"])
+    for k, f in enumerate(others, start=1):
+        verdict[f["name"]] = (f"pass (alternate {k})" if k <= max_alternates
+                              else f"not used: beyond the {max_alternates} alternates")
+    return verdict, default["name"]

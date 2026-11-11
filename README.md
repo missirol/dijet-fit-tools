@@ -60,12 +60,16 @@ dropped above 190 GeV).
 ### Background functions and selection
 
 Families `dijet` (CMS standard dijet function), `moddijet` ((1−x^{1/3}) variant) and `ua2`,
-with 3, 4, 5 parameters (incl. normalisation); 6-parameter variants can be requested with
-`--functions`. A fit is acceptable if it has status 0, covariance quality 3, no parameter at a
-limit and goodness-of-fit p > 0.05. In each family, the acceptable function with the fewest
-parameters is selected; the selected functions (at most one per family) enter the `RooMultiPdf`
-of the category, and the one with the highest p-value is its default. (The F-test p-value
-against the next order is reported in `background_summary.md` for information only.)
+with 3, 4, 5, 6 parameters (incl. normalisation; `--functions` selects others). A fit is
+acceptable if it has status 0, covariance quality 3, no parameter at a limit and goodness-of-fit
+p > 0.05 (`--pvalue-threshold`); only acceptable fits are used. In each family, a sequence of
+standard Fisher F-tests fixes the highest order: starting from the lowest acceptable order, the
+next order is taken while it is significantly better (F-test p-value < 0.05,
+`--ftest-threshold`) and its fit is acceptable. The `RooMultiPdf` of the category contains:
+
+* the default: among the families' highest orders, the one with the largest p-value;
+* up to 4 alternates (`--max-alternates`): the other acceptable functions, of order at most
+  their family's highest order, ranked by p-value.
 
 ### Signal fits
 
