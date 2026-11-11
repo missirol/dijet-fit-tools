@@ -1,6 +1,8 @@
 #!/bin/bash
 # Run the full workflow:  ./run_all.sh DATA.root SIGNAL_M200.root SIGNAL_M300.root [...]
 # (at least two signal files: the signal model is interpolated between mass points)
+# Steps 1-6: inputs, background fits, signal fits, signal parametrisation, workspace, Combine
+# datacards. The bias test (scripts/bias_test.py, CPU-intensive) is run separately.
 #
 # This file holds the analysis configuration; the scripts themselves have no built-in fit range.
 # Environment variables (optional):
@@ -68,3 +70,5 @@ python3 "$HERE/scripts/build_workspace.py" --input "$OUT/inputs.root" \
   --background "$OUT/background/background_fits.json" \
   --signal "$OUT/signal_param/signal_parametrisation.json" \
   -o "$OUT/workspace/dijet_workspace.root" | tee "$OUT/5_build_workspace.log"
+python3 "$HERE/scripts/make_datacards.py" "$OUT/workspace/dijet_workspace.json" \
+  -o "$OUT/datacards" | tee "$OUT/6_make_datacards.log"

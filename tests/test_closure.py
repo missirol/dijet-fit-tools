@@ -10,9 +10,9 @@ The workflow runs once per test module (a few tens of seconds); select or skip t
 `pytest -m closure` / `pytest -m "not closure"`. Pass `--basetemp DIR` to keep the outputs.
 """
 import json
+import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 
@@ -22,6 +22,7 @@ import pytest
 import synthetic as syn
 from conftest import REPO
 from dijetfit import background as B
+from dijetfit import combine as C
 from dijetfit.histtools import window_hist
 
 pytestmark = pytest.mark.closure
@@ -90,8 +91,8 @@ def expected_counts_of_fit(ROOT, fit, edges, tag):
         v = ROOT.RooRealVar(f"q{k}_{tag}", "", fit["params"][f"p{k}"]["value"])
         al.add(v)
         keep.append(v)
-    pdf = B.make_pdf(ROOT, f"pdf_{tag}", fit["name"], al, fit["formula"])
     lo, hi = np.array(edges[:-1]), np.array(edges[1:])
+    pdf = B.make_pdf(ROOT, f"pdf_{tag}", fit["name"], al, fit["formula"], B.bin_sum_nbins(lo, hi))
     return B.expected_counts(ROOT, x, pdf, fit["norm"]["value"], lo, hi, B.needs_bin_integration(lo, hi))
 
 
@@ -281,43 +282,112 @@ def test_every_fit_has_a_plot(run):
     assert len(list((out / "signal_param" / "plots").glob("model_*.png"))) == ncat
 
 
-@pytest.mark.skipif(shutil.which("text2workspace.py") is None, reason="CMS Combine not available")
-def test_combine_reads_workspace_and_mass_is_set_by_m(run, tmp_path):
-    """Regression test: Combine reads the workspace, and -m sets the signal mass (MH must be a
-    constant parameter, otherwise Combine fits it and -m has no effect)."""
-    c = cat_name(next(iter(syn.CATEGORIES)))
-    ws = run["out"] / "workspace" / "dijet_workspace.root"
-    (tmp_path / "card.txt").write_text(f"""imax 1
-jmax 1
-kmax *
----------------
-shapes ZprimeQQ  {c}  {ws} w:ZprimeQQ_{c}
-shapes bkg       {c}  {ws} w:bkg_{c}
-shapes data_obs  {c}  {ws} w:data_obs_{c}
----------------
-bin          {c}
-observation  -1
----------------
-bin          {c}   {c}
-process      ZprimeQQ  bkg
-process      0    1
-rate         1    1
----------------
-pdfindex_{c} discrete
-""")
-    sh = lambda *a: subprocess.run(a, cwd=tmp_path, capture_output=True, text=True)  # noqa: E731
-    assert sh("text2workspace.py", "card.txt", "-o", "card.root").returncode == 0
+# ---- step 6 and the bias test (CMS Combine) -------------------------------------------------------
+def combine_cmd(run, *args):
+    return subprocess.run(["combine", *map(str, args)], cwd=run["out"] / "datacards",
+                          capture_output=True, text=True)
+
+
+def best_fit_r(run, mass, mu, rrange, tag, *extra):
+    """r of a Combine fit (MultiDimFit, best fit only) to the Asimov data set for mu."""
+    p = combine_cmd(run, "-M", "MultiDimFit", "datacard_combined.root", "-m", mass, "-t", -1,
+                    "--expectSignal", mu, "--toysNoSystematics", "--rMin", rrange[0],
+                    "--rMax", rrange[1],
+                    "--algo", "none", *C.DISCRETE_PROFILING_OPTIONS, "-n", tag, *extra)
+    assert p.returncode == 0 and "MultiDimFit failed" not in p.stdout, p.stdout[-3000:]
+    found = re.search(r"best fit parameter values:\s*\n\s*r :\s*([-+0-9.eE]+)", p.stdout)
+    assert found, p.stdout[-2000:]
+    return float(found.group(1))
+
+
+def test_datacards(run):
+    """One datacard per category, taking everything from the workspace; the combined card and
+    workspace exist (make_datacards.py also checks the expected yields in the latter)."""
+    d = run["out"] / "datacards"
+    meta = json.loads((d / "datacards.json").read_text())
+    assert sorted(meta["categories"]) == sorted(run["ws"]["categories"])
+    for c in meta["categories"]:
+        card = (d / meta["cards"][c]).read_text()
+        assert f"w:bkg_{c}" in card and f"w:ZprimeQQ_{c}" in card and f"w:data_obs_{c}" in card
+        assert f"pdfindex_{c}" in card
+    combined = (d / "datacard_combined.txt").read_text()
+    assert re.search(rf"imax {len(meta['categories'])}\b", combined)
+    assert (d / "datacard_combined.root").exists()
+
+
+def sigma_r_estimate(ROOT, run, mass):
+    """Lower bound on the uncertainty of r (background fixed): 1 / sqrt(sum s_i^2 / b_i), with
+    s_i the signal (sigma = 1 nb) and b_i the data in each bin of every category."""
+    f = ROOT.TFile.Open(str(run["out"] / "workspace" / "dijet_workspace.root"))
+    w = f.Get("w")
+    w.var("MH").setVal(mass)
+    info = 0.0
+    for c in run["ws"]["categories"]:
+        x, d = w.var(f"mjj_{c}"), w.data(f"data_obs_{c}")
+        pdf, norm = w.pdf(f"ZprimeQQ_{c}"), w.function(f"ZprimeQQ_{c}_norm").getVal()
+        for i in range(d.numEntries()):
+            x.setVal(d.get(i).getRealValue(x.GetName()))
+            s = norm * pdf.getVal(ROOT.RooArgSet(x)) * 1.0
+            info += s * s / max(d.weight(), 1.0)
+    return 1.0 / math.sqrt(info)
+
+
+def test_combine_asimov_fit_returns_the_injected_signal(ROOT, run):
+    """Regression test for the normalisation of the background pdfs: a Combine fit to its own
+    Asimov data set, with the generating background function, must return the injected signal
+    strength (within 2% of its uncertainty). With the pdfs normalised by their integral instead
+    of the sum over the bin centres, the expected counts per bin do not add up to the yield, and
+    with ~10^7 events per category the fitted r was off by up to one standard deviation."""
+    masses = expected_masses(run["fit_range"])
+    meta = json.loads((run["out"] / "datacards" / "datacards.json").read_text())
+    idx = [v["index"] for v in meta["categories"].values()]
+    fix = ["--setParameters", ",".join(f"{v['index']}={v['default_index']}"
+                                       for v in meta["categories"].values()),
+           "--freezeParameters", ",".join(idx)]
+    for m in (masses[0], masses[-1]):
+        sigma = sigma_r_estimate(ROOT, run, m)
+        for mu in (0.0, 3.0 * sigma):
+            r = best_fit_r(run, m, mu, (mu - 20 * sigma, mu + 20 * sigma), f".asimov{m}_{mu:g}", *fix)
+            assert abs(r - mu) < 0.02 * sigma, (m, mu, r, sigma)
+
+
+def test_combine_mass_is_set_by_m(run):
+    """Regression test: -m sets the signal mass (MH must be a constant parameter, otherwise
+    Combine fits it and -m has no effect)."""
     masses = expected_masses(run["fit_range"])
     if len(masses) < 2:
         pytest.skip("fewer than two signal masses for this fit range")
     limits = {}
     for m in (masses[0], masses[-1]):
-        p = sh("combine", "-M", "AsymptoticLimits", "card.root", "-m", str(m), "--run", "blind",
-               "--cminDefaultMinimizerStrategy", "0", "-n", f".m{m}")
+        p = combine_cmd(run, "-M", "AsymptoticLimits", "datacard_combined.root", "-m", m,
+                        "--run", "blind", "--cminDefaultMinimizerStrategy", "0", "-n", f".m{m}")
         found = re.search(r"Expected 50\.0%: r < ([0-9.eE+-]+)", p.stdout)
         assert found, p.stdout[-2000:]
         limits[m] = float(found.group(1))
     assert abs(limits[masses[0]] / limits[masses[-1]] - 1) > 0.1, limits
+
+
+def test_bias_test_script(run):
+    """bias_test.py runs end to end on a minimal configuration: every toy is fitted, the
+    Asimov uncertainty and the pull fit are found, and the outputs and plots are written."""
+    masses = expected_masses(run["fit_range"])
+    out = run["base"] / "bias"
+    p = subprocess.run([sys.executable, str(REPO / "scripts" / "bias_test.py"),
+                        run["out"] / "datacards" / "datacards.json", "-o", out, "--masses",
+                        str(masses[-1]), "--mu", "1", "--ntoys", "5", "--toys-per-job", "5",
+                        "--pull-toys", "2", "--jobs", "2", "--formats", "png"],
+                       capture_output=True, text=True)
+    (run["base"] / "bias_test.log").write_text(p.stdout + p.stderr)
+    assert p.returncode == 0, p.stderr[-3000:]
+    res = json.loads((out / "bias_results.json").read_text())
+    assert res["asimov"][str(masses[-1])]["sigma"] > 0
+    (point,) = res["points"]
+    for mode in ("envelope", "fixed"):
+        assert point["summary"][mode]["n"] == 5 and point["summary"][mode]["n_failed"] == 0
+        assert (out / "plots" / f"rfit_default_{mode}_M{masses[-1]}_mu1.png").exists()
+    assert len(point["toys"]["pull_fits"]) == 2
+    assert (out / "plots" / "bias_summary_default.png").exists()
+    assert (out / "bias_summary.md").exists()
 
 
 # ---- fit-range scan ------------------------------------------------------------------------------

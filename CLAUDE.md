@@ -31,6 +31,12 @@
   - Signal parameters vs mass: splines by default, polynomials via command line; each parameter
     is interpolated only through the mass points where it was floating in the fit, and held
     constant beyond the outermost such points.
+  - Combine: one datacard per category, everything (data, background model, signal) taken from
+    the workspace. All statistical tests use the combination of the 11 categories (exclusive
+    data sets): background parameters uncorrelated across categories, only the signal strength
+    of a given signal common to all of them.
+  - Bias tests: toys with injected signal strengths per signal mass (e.g. mu = 0.5, 1, 5),
+    fitted with background + signal; check that the fits return the injected mu on average.
 - Every fit needs a plot with a pull sub-pad, pull = (data - fit) / data_error.
 - Tests: run `pytest` (inside the environment) after changes; extend the unit tests and the
   closure test (tests/synthetic.py, tests/test_closure.py) together with new features.

@@ -122,16 +122,22 @@ def test_bin_centre_evaluation_at_1gev(ROOT, fit_range):
 
 
 def test_wide_bins_are_integrated(ROOT, fit_range, monkeypatch):
-    """Regression test: with 10 GeV bins and ~10^7 events, evaluating the pdf at the bin centres
-    is biased by many standard deviations; the fit must integrate over the bins."""
+    """Regression test, 10 GeV bins and ~10^7 events (truth: the function integrated over the
+    bins). The fit integrates over the bins and reproduces the truth. Evaluating the pdf at the
+    bin centres also works if it is normalised by its sum over the bin centres (the expected
+    counts then add up to the yield), but is biased by many standard deviations with RooFit's
+    default normalisation by the integral (the expected counts do not add up to the yield)."""
     h = asimov(ROOT, fit_range, width=10.0, integrate=True, name="asimov10")
     r = B.fit_function(ROOT, "dijet4", h, "t_int")
     assert r["bin_integration"] and r["status"] == 0 and r["n_errors"] == 0
     assert r["chi2"] < 0.05
     monkeypatch.setattr(B, "BIN_INTEGRATION_ABOVE", 1e9)  # force bin-centre evaluation
     r_c = B.fit_function(ROOT, "dijet4", h, "t_cen")
-    assert not r_c["bin_integration"]
-    assert r_c["chi2"] > 100 * max(r["chi2"], 1e-3)
+    assert not r_c["bin_integration"] and r_c["chi2"] < 0.05
+    monkeypatch.setattr(B, "bin_sum_nbins", lambda lo, hi: None)  # normalise by the integral
+    r_i = B.fit_function(ROOT, "dijet4", h, "t_cen_int")
+    assert not r_i["bin_integration"]
+    assert r_i["chi2"] > 100 * max(r["chi2"], 1e-3)
 
 
 def test_pdf_carries_precise_integrator(ROOT, fit_range):
@@ -141,6 +147,29 @@ def test_pdf_carries_precise_integrator(ROOT, fit_range):
     cfg = pdf.specialIntegratorConfig()
     assert cfg.epsRel() == pytest.approx(B.INTEGRATOR_EPS_REL)
     assert cfg.method1D().getCurrentLabel() == "RooAdaptiveGaussKronrodIntegrator1D"
+
+
+def test_bin_sum_normalisation(ROOT, fit_range):
+    """With uniform bins, the pdf is normalised by its sum over the bin centres: the expected
+    counts N * pdf(centre) * width add up exactly to N (with the integral as normalisation they
+    differ by the midpoint-rule error, ~1e-5 here, which biases fits with ~1e7 events)."""
+    xmin, xmax = fit_range
+    nb = int(round(xmax - xmin))
+    lo = np.arange(nb) + xmin
+    hi = lo + 1.0
+    assert B.bin_sum_nbins(lo, hi) == nb
+    assert B.bin_sum_nbins(np.array([0.0, 2.0]), np.array([2.0, 4.0])) is None  # integrated
+    assert B.bin_sum_nbins(np.array([0.0, 1.0]), np.array([1.0, 1.5])) is None  # not uniform
+    x = ROOT.RooRealVar("x_bs", "", xmin, xmax)
+    p = ROOT.RooRealVar("p_bs", "", -0.03)
+    formula = "exp(@1*@0)"
+    pdf = B.make_pdf(ROOT, "pdf_bs", "test", ROOT.RooArgList(x, p), formula, nb)
+    assert pdf.specialIntegratorConfig().method1D().getCurrentLabel() == "RooBinIntegrator"
+    nu = B.expected_counts(ROOT, x, pdf, 1e7, lo, hi, False)
+    assert nu.sum() == pytest.approx(1e7, rel=1e-12)
+    ref = B.make_pdf(ROOT, "pdf_bs_int", "test", ROOT.RooArgList(x, p), formula)
+    nu_int = B.expected_counts(ROOT, x, ref, 1e7, lo, hi, False)
+    assert abs(nu_int.sum() / 1e7 - 1) > 1e-6  # the mismatch that the bin sum removes
 
 
 def test_baker_cousins():
@@ -208,10 +237,18 @@ def test_selection_caps_alternates_and_handles_no_acceptable_fit():
 def test_parameter_at_limit_is_reported_after_the_last_attempt(ROOT, fit_range, monkeypatch):
     """Regression test: a parameter that still ends at its limit after the last re-centring must
     be reported, and the fit must fail the quality requirement, even though Minuit reports a
-    good fit (status 0, covQual 3). A narrow parameter range (QRANGE, in units of the parameter
-    uncertainties) makes the parameters hit their limits: the minimum of the bin-centre fit is
-    ~0.7 sigma away from the starting values for this histogram."""
+    good fit (status 0, covQual 3). The starting values are moved by 3 standard deviations
+    (in the decorrelated basis) and a narrow parameter range (QRANGE, in units of the parameter
+    uncertainties) makes the parameters hit their limits."""
     h = asimov(ROOT, fit_range, integrate=True, name="asimov_lim")
+    orig = B.start_values
+
+    def shifted(name, hist, m0):
+        p, mu = orig(name, hist, m0)
+        M, _ = B.decorrelated_basis(name, hist, mu, m0)
+        return p + M @ np.full(len(p), 3.0), mu
+
+    monkeypatch.setattr(B, "start_values", shifted)
     monkeypatch.setattr(B, "QRANGE", 0.05)
     monkeypatch.setattr(B, "MAX_RECENTRE", 1)
     r = B.fit_function(ROOT, "dijet4", h, "t_lim")

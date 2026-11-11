@@ -197,19 +197,42 @@ def baker_cousins(n, nu):
     return float(2.0 * term.sum())
 
 
-def make_pdf(ROOT, pdf_name, func, arglist, formula):
+def make_pdf(ROOT, pdf_name, func, arglist, formula, nbins=None):
     """RooGenericPdf for background function `func` (arglist = observable, p1, p2, ...).
 
-    The normalisation integral is numerical. With O(10^7) events, the default relative
-    precision (1e-7) makes the likelihood noisy at the level of O(1) units, which spoils the
-    minimisation; an adaptive Gauss-Kronrod integrator with relative precision 1e-10 is set
-    on the pdf (this setting is stored with the pdf in the workspace)."""
+    nbins given (uniform bins evaluated at their centres, i.e. not rebinned): the pdf is
+    normalised by the sum of its values at the nbins bin centres times the bin width
+    (RooBinIntegrator), not by its integral. The expected counts per bin, N * pdf(centre) *
+    width, then add up exactly to the yield N, i.e. the extended likelihood of RooFit and Combine
+    is the binned Poisson likelihood of these expectations. With the integral as normalisation
+    the per-bin expectations add up to N * (1 + O(1e-5)) (midpoint-rule error), and the
+    parameter dependence of that mismatch is enough, with O(10^7) events, to pull the shape
+    parameters by O(1) standard deviations and the signal strength in Combine by up to ~1
+    standard deviation (also between Combine's own toys and its fits).
+
+    nbins None (bins integrated over, see fit_function): the integral is used, with an adaptive
+    Gauss-Kronrod integrator of relative precision 1e-10 (with the default 1e-7 the likelihood
+    is noisy at the O(1) level for these sample sizes).
+    The integrator setting is stored with the pdf in the workspace."""
     pdf = ROOT.RooGenericPdf(pdf_name, func, formula, arglist)
     cfg = pdf.specialIntegratorConfig(True)
-    cfg.setEpsRel(INTEGRATOR_EPS_REL)
-    cfg.setEpsAbs(0.0)
-    cfg.method1D().setLabel("RooAdaptiveGaussKronrodIntegrator1D")
+    if nbins:
+        cfg.method1D().setLabel("RooBinIntegrator")
+        cfg.getConfigSection("RooBinIntegrator").setRealValue("numBins", int(nbins))
+    else:
+        cfg.setEpsRel(INTEGRATOR_EPS_REL)
+        cfg.setEpsAbs(0.0)
+        cfg.method1D().setLabel("RooAdaptiveGaussKronrodIntegrator1D")
     return pdf
+
+
+def bin_sum_nbins(lo, hi):
+    """Number of bins for the bin-sum normalisation of make_pdf, or None if the bins are
+    integrated over (wider than 1 GeV) or not uniform."""
+    w = hi - lo
+    if needs_bin_integration(lo, hi) or np.max(w) - np.min(w) > 1e-6 * np.max(w):
+        return None
+    return len(lo)
 
 
 def at_limit_of(var, frac=1e-3):
@@ -247,10 +270,12 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
     """Extended binned maximum-likelihood fit of function `name` to `hist` (whose axis is the
     fit range). Returns a dict with the results (python values) and the RooFit objects.
 
-    With 1 GeV bins the pdf is evaluated at the bin centres (RooFit's default for binned data).
-    With wider bins (rebinned categories) the pdf is integrated over each bin: RooFit's default
-    binned likelihood (bin-centre density, but total yield from the exact integral) is then
-    biased at the level of many standard deviations for these sample sizes."""
+    With 1 GeV bins the pdf is evaluated at the bin centres (RooFit's default for binned data)
+    and normalised by its sum over the bin centres (see make_pdf), so that the expected counts
+    add up to the fitted yield. With wider bins (rebinned categories) the pdf is integrated over
+    each bin: RooFit's default binned likelihood (bin-centre density, but total yield from the
+    exact integral) is then biased at the level of many standard deviations for these sample
+    sizes."""
     lo, hi, n = hist_arrays(hist)
     xmin, xmax = float(lo[0]), float(hi[-1])
     edges = list(lo) + [xmax]
@@ -269,7 +294,7 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
         p = ROOT.RooRealVar(f"{name}_p{k}_{tag}", f"q{k}", v, v - QRANGE, v + QRANGE)
         params.append(p)
         arglist.add(p)
-    pdf = make_pdf(ROOT, f"{name}_{tag}", name, arglist, formula)
+    pdf = make_pdf(ROOT, f"{name}_{tag}", name, arglist, formula, bin_sum_nbins(lo, hi))
     ntot = float(n.sum())
     norm = ROOT.RooRealVar(f"{name}_{tag}_norm", "N_{bkg}", ntot, NORM_RANGE[0] * ntot, NORM_RANGE[1] * ntot)
     model = ROOT.RooExtendPdf(f"{name}_{tag}_ext", "", pdf, norm)

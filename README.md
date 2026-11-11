@@ -6,8 +6,9 @@ of the two jets, written to a RooWorkspace (format: [docs/OUTPUT_FORMAT.md](docs
 
 ## Setup
 
-ROOT 6.36.14 (PyROOT, RooFit), numpy, and CMS Combine (only for `RooMultiPdf` in the last
-step). `setup/install_env.sh` creates such an environment from conda-forge.
+ROOT 6.36.14 (PyROOT, RooFit), numpy, and CMS Combine 11.1.0 (`RooMultiPdf` in step 5, the
+datacards and statistical tests in steps 6-7). `setup/install_env.sh` creates such an
+environment from conda-forge.
 
 ## Workflow
 
@@ -15,9 +16,10 @@ step). `setup/install_env.sh` creates such an environment from conda-forge.
 ./run_all.sh DATA.root ZprimeToQQ_M200_*.root ZprimeToQQ_M300_*.root ...
 ```
 
-runs the five steps below (outputs in `output/`, logs `output/<N>_<step>.log`). Each step is
+runs steps 1-6 below (outputs in `output/`, logs `output/<N>_<step>.log`). Each step is
 a separate script with `--help`; every step reads only the outputs of the previous ones, so
-any step can be re-run on its own.
+any step can be re-run on its own. The bias test (step 7) is CPU-intensive and is run
+separately (see [Bias test](#bias-test-step-7)).
 
 | step | script | does | main outputs |
 |---|---|---|---|
@@ -26,6 +28,8 @@ any step can be re-run on its own.
 | 3 | `scripts/fit_signal.py` | fits each signal template with a double-sided Crystal Ball, in the same range/binning | `signal_fits.json`, `signal_summary.md`, plots |
 | 4 | `scripts/parametrize_signal.py` | interpolates the signal parameters and yield in the mass (spline by default, `--default-model polN` / `--model PARAM=polN` for polynomials) | `signal_parametrisation.json`, plots |
 | 5 | `scripts/build_workspace.py` | writes the workspace and checks that it reproduces the fit results | `workspace/dijet_workspace.root` (+ `.json` summary) |
+| 6 | `scripts/make_datacards.py` | one Combine datacard per category (everything taken from the workspace), their combination, and `text2workspace.py`; checks the expected yields of the combined workspace | `datacards/datacard_CAT.txt`, `datacard_combined.{txt,root}`, `datacards.json` |
+| 7 | `scripts/bias_test.py` | bias test of the signal strength with Combine toys, all categories combined | `bias/bias_results.json`, `bias_summary.md`, plots |
 
 Every fit produces a plot with the distribution, the fit and a pull sub-pad,
 (data − fit)/σ_data. RooFit/Minuit warnings and errors are counted per fit and reported in
@@ -49,7 +53,8 @@ variables. With `--scan` the lower edge is raised in 5 GeV steps (up to `--scan-
 every category has at least one passing function. Every step is logged.
 
 Rebinning is switched off by default: `build_workspace.py` refuses categories with bins wider
-than 1 GeV, because Combine evaluates the pdfs at the bin centres (see `docs/OUTPUT_FORMAT.md`).
+than 1 GeV, because the fits integrate the pdfs over such bins while Combine evaluates them at
+the bin centres (see `docs/OUTPUT_FORMAT.md`).
 For studies it can be switched on with `REBIN_FACTORS` (`--rebin-factors`, e.g. `2 5 10`): the
 failing categories are then rebinned at `SCAN_MAX_UNBINNED` (default 190 GeV) with the smallest
 factor that works, before the lower edge is raised further.
@@ -75,6 +80,13 @@ next order is taken while it is significantly better (F-test p-value < 0.05,
 * up to 4 alternates (`--max-alternates`): the other acceptable functions, of order at most
   their family's highest order, ranked by p-value.
 
+With 1 GeV bins the background pdfs are evaluated at the bin centres and normalised by their
+sum over the bin centres (not by their integral), in the fits and in the workspace: the
+expected counts per bin then add up exactly to the yield, as the extended likelihood of RooFit
+and Combine assumes. With the integral as normalisation they differ by O(10⁻⁵); with ~2×10⁷
+events per category this pulled the background parameters by O(1σ) and the signal strength in
+Combine by up to ~1σ.
+
 ### Signal fits
 
 Double-sided `RooCrystalBall` (common σ). The fit releases the parameters in stages
@@ -95,6 +107,27 @@ the parametrisation. The goodness-of-fit p-value is reported as a quality figure
 reject fits. In the parametrisation, each parameter is interpolated only through the mass points
 where it was floating in the fit (values fixed by the procedure are not measurements), or
 through all points if fewer than two of them float.
+
+## Bias test (step 7)
+
+```
+python3 scripts/bias_test.py output/datacards/datacards.json -o output/bias \
+  [--masses 200 300 400 500] [--mu 0 0.5 1 5] [--ntoys 300] [--pull-toys 25 --pull-mu 1]
+```
+
+For every signal mass and injected signal strength μ (× σ = 1 nb), Combine generates binned toys
+from the combined workspace (background: the default function of every category, with the
+parameters of the fit to data; `--generate altK` uses the K-th alternates instead) and fits
+them with signal + background, all 11 categories together (r common, background parameters
+uncorrelated):
+
+* `envelope`: the background function is profiled (discrete profiling), as in the analysis;
+* `fixed`: the background is the generating function (reference).
+
+The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N); a common criterion is
+|bias| < 0.14. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
+`--robustFit`). With `--pull-toys K`, K toys per point are also fitted with uncertainties
+(`--robustFit 1`, about a minute per toy) and the pulls (r_fit − μ)/σ_r are reported.
 
 ## Tests
 
@@ -122,8 +155,13 @@ default 150-600 GeV, as in `run_all.sh`).
   configured fit range, and every step is compared with the truth: input normalisation and
   category selection, the fit range (must stay as configured), the fit of the generating
   background function, the signal fits (likelihood ratio against the truth), the interpolated
-  signal model at 350 GeV, the workspace content, one plot per fit, and (if CMS Combine is
-  installed) that Combine reads the workspace and that `-m` sets the mass.
+  signal model at 350 GeV, the workspace content, one plot per fit, and the Combine steps
+  (below).
+* **Combine tests** (also in `tests/test_closure.py`): the datacards of step 6; a Combine fit
+  to its own Asimov data set (generating background function) returns the injected signal
+  strength within 2% of its uncertainty, for no signal and 3σ (regression test for the
+  normalisation of the background pdfs: with the old normalisation it was off by 1.2σ); `-m`
+  sets the mass; `bias_test.py` runs end to end on a minimal configuration.
 * **Scan test** (also in `tests/test_closure.py`): a background with a turn-on just above the
   configured lower edge; `fit_background.py --scan` must raise the lower edge past it.
 

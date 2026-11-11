@@ -64,12 +64,19 @@ Notes:
   give the highest order. The default is the family maximum with the largest p-value; up to 4
   alternates are the other acceptable functions of order at most their family's maximum,
   ranked by p-value. `pdfindex_CAT` index 0 is the default, then the alternates in this order.
-* The background pdfs carry their own numerical integrator settings (adaptive Gauss–Kronrod,
-  relative precision 1e-10), which the fits need for these sample sizes (~2×10⁷ events/category).
+* **Normalisation of the background pdfs**: each pdf carries its own integrator setting,
+  `RooBinIntegrator` with one point per bin, i.e. the pdf is normalised by the sum of its values
+  at the bin centres times the bin width, not by its integral. Combine (like RooFit for binned
+  data) predicts N × pdf(bin centre) × width per bin, but uses N as the total of the extended
+  likelihood; with the bin-sum normalisation the two agree exactly, and the likelihood is the
+  binned Poisson likelihood of the bin-centre predictions. With the integral as normalisation
+  they differ by O(10⁻⁵) (midpoint rule), which for ~2×10⁷ events per category pulls the
+  background parameters by O(1σ) and the fitted signal strength in Combine by up to ~1σ (also
+  for Combine's own toys). The background fits of step 2 use the same normalisation.
 * **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in
   `mjj_CAT`). Combine evaluates the pdfs at the bin centres; for wider bins (a category rebinned
-  by the fit-range scan) the fits integrate the pdfs over each bin instead, and bin-centre
-  evaluation would be biased by many standard deviations for these sample sizes. So
+  by the fit-range scan) the fits integrate the pdfs over each bin instead, so the fitted
+  parameters would not describe the model that Combine uses. So
   `build_workspace.py` stops with an error for any category with bins wider than 1 GeV; the
   rebinned fit results remain available for inspection.
 * `RooMultiPdf` is a Combine class: reading `bkg_CAT` needs the Combine library
@@ -100,3 +107,19 @@ pdfindex_CAT discrete
 
 `rate 1` means that the normalisation is taken from `ZprimeQQ_CAT_norm` / `bkg_CAT_norm`.
 The mass hypothesis is set with `-m`, e.g. `text2workspace.py card.txt -m 300`.
+
+`scripts/make_datacards.py` (step 6 of `run_all.sh`) writes these cards for all categories
+(`datacards/datacard_CAT.txt`, with the workspace path relative to the card), combines them with
+`combineCards.py` keeping the category names as bin names (`datacard_combined.txt`), and runs
+`text2workspace.py` (`datacard_combined.root`). The signal process has the same name in all
+categories, so the signal strength `r` is common to all of them; the background parameters,
+yields and indices are separate per category (uncorrelated). There are no systematic
+uncertainties. `datacards.json` lists the names used by the later steps (categories, index
+parameters and their functions, signal masses).
+
+Fits with the `RooMultiPdf` use the options recommended for discrete profiling
+(`dijetfit/combine.py`, `DISCRETE_PROFILING_OPTIONS`):
+`--cminDefaultMinimizerStrategy 0 --X-rtd MINIMIZER_freezeDisassociatedParams
+--X-rtd MINIMIZER_multiMin_hideConstants --X-rtd MINIMIZER_multiMin_maskConstraints
+--X-rtd MINIMIZER_multiMin_maskChannels=2`. Uncertainties on `r` need `--robustFit 1`: the
+default Hesse/Minos errors are wrong with the envelope (the index changes during the error scan).

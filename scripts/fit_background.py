@@ -215,6 +215,8 @@ def main():
                              "alternates: the other acceptable orders up to the family maxima, by p-value",
                    functions=args.functions,
                    function_definitions={f: B.describe(f) for f in args.functions},
+                   pdf_normalisation="sum over the bin centres (1 GeV bins); integral, adaptive Gauss-Kronrod "
+                                     "(rebinned categories, pdf integrated over the bins)",
                    integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={},
                    dropped_categories={})
     md = ["# Background fits\n", f"Fit range: [{xmin:g}, {args.xmax:g}] GeV  ",
