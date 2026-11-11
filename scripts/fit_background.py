@@ -2,24 +2,35 @@
 """Step 2: background fits of data_obs in every category.
 
 For each category, every candidate function (see dijetfit/background.py) is fitted to data_obs
-in the fit range [XMIN, XMAX] (extended binned maximum likelihood). A function *passes* if
+in the fit range [XMIN, XMAX] (extended binned maximum likelihood). A fit is acceptable if
   - the fit has status 0 and a full, accurate covariance matrix (covQual 3),
   - no parameter is at its limit,
-  - the goodness-of-fit p-value (Poisson likelihood-ratio chi2) exceeds --pvalue-threshold,
-  - within its family, its order is not above the order selected by the Fisher F-test.
-RooFit/Minuit warnings and errors are counted and reported, but do not fail a fit.
-The passing functions of a category later enter its RooMultiPdf.
+  - the goodness-of-fit p-value (Poisson likelihood-ratio chi2) exceeds --pvalue-threshold.
+In every family (dijet, moddijet, ua2) the acceptable function with the fewest parameters
+*passes*; acceptable functions with more parameters in the same family are not used. The
+passing functions of a category enter its RooMultiPdf; the one with the highest p-value is the
+default. RooFit/Minuit warnings and errors are counted and reported, but do not fail a fit.
+The F-test p-value against the next order of the family is reported for information only.
 
 The fit range [--xmin, --xmax] is common to all categories and must be given explicitly (the
 script has no built-in range). With --scan, the lower edge is chosen automatically, starting
-from --xmin, following this priority:
+from --xmin, following this priority (see dijetfit/scan.py):
   1. original binning: XMIN, XMIN + --scan-step, ... up to --scan-max-unbinned, until every
      category has at least one passing function;
   2. if some categories still fail at that XMIN: rebin only the failing categories, trying the
-     factors --rebin-factors [default 2 5 10] in turn;
-  3. if some categories still fail: raise XMIN further (by --scan-step) up to --scan-max,
-     each category keeping the smallest rebin factor that works.
+     factors --rebin-factors [default 2 5 10] in increasing order, keeping the smallest that
+     works (a category for which none works goes back to no rebinning);
+  3. if some categories still fail: raise XMIN further (by --scan-step) up to --scan-max; at
+     every new XMIN each category starts again from no rebinning and keeps the smallest rebin
+     factor that works.
 --scan-max-unbinned and --scan-max are required with --scan.
+NOTE: build_workspace.py refuses categories with bins wider than the original 1 GeV, because
+Combine evaluates the pdfs at the bin centres (see docs/OUTPUT_FORMAT.md); rebinned results are
+kept for inspection.
+
+If a category has no passing function, the script stops with an error, unless
+--drop-failing-categories is given: such categories are then left out of the output (and of all
+later steps) and listed, with the reason, under "dropped_categories" in background_fits.json.
 Rebinning merges consecutive bins starting from XMIN (the last bin may be narrower).
 Every decision is logged in the output JSON and in the summary.
 
@@ -37,16 +48,17 @@ from dijetfit import background as B  # noqa: E402
 from dijetfit.common import DATA_NAME, category_labels, setup_root, write_json  # noqa: E402
 from dijetfit.histtools import bin_edges_in_window, binning_label, window_hist  # noqa: E402
 from dijetfit.plotting import fit_plot  # noqa: E402
+from dijetfit.scan import scan_fit_range  # noqa: E402
 
 
 def list_categories(tfile):
     return sorted(k.GetName() for k in tfile.GetListOfKeys() if k.GetClassName().startswith("TDirectory"))
 
 
-def fit_category(ROOT, raw, cat, xmin, xmax, rebin, functions, pthr, fthr):
+def fit_category(ROOT, raw, cat, xmin, xmax, rebin, functions, pthr):
     h = window_hist(ROOT, raw, xmin, xmax, rebin, name=f"{cat}_data")
     fits = [B.fit_function(ROOT, f, h, cat) for f in functions]
-    verdict = B.select_functions(fits, h.GetNbinsX(), pthr, fthr)
+    verdict = B.select_functions(fits, h.GetNbinsX(), pthr)
     for f in fits:
         f["verdict"] = verdict[f["name"]]
     passing = [f["name"] for f in fits if f["verdict"] == "pass"]
@@ -82,7 +94,6 @@ def main():
     ap.add_argument("--functions", nargs="+", default=B.function_names(),
                     help=f"candidate functions (default: {' '.join(B.function_names())})")
     ap.add_argument("--pvalue-threshold", type=float, default=0.05)
-    ap.add_argument("--ftest-threshold", type=float, default=0.05)
     ap.add_argument("--scan", action="store_true",
                     help="choose XMIN (and rebinning) automatically, starting from --xmin")
     ap.add_argument("--scan-step", type=float, default=5.0, help="step of the scan [GeV] (default: 5)")
@@ -90,6 +101,8 @@ def main():
                     help="largest XMIN tried before rebinning (required with --scan) [GeV]")
     ap.add_argument("--scan-max", type=float, help="largest XMIN tried at all (required with --scan) [GeV]")
     ap.add_argument("--rebin-factors", type=int, nargs="+", default=[2, 5, 10])
+    ap.add_argument("--drop-failing-categories", action="store_true",
+                    help="leave out categories without a passing function instead of stopping")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = ap.parse_args()
 
@@ -119,13 +132,13 @@ def main():
 
     outdir = Path(args.outdir)
     (outdir / "plots").mkdir(parents=True, exist_ok=True)
-    pthr, fthr = args.pvalue_threshold, args.ftest_threshold
+    pthr = args.pvalue_threshold
 
     def run(xmin, which, factors):
         res = {}
         for c in which:
             res[c] = fit_category(ROOT, raw[c], c, xmin, args.xmax, factors[c], args.functions,
-                                  pthr, fthr)
+                                  pthr)
         return res
 
     scan_log = []
@@ -149,56 +162,43 @@ def main():
         summary_line(xmin, results, rebin)
     else:
         log(f"Scan of the lower edge of the fit range (upper edge {args.xmax:g} GeV)")
-        log("Stage 1: original binning (no rebinning)")
-        while True:
-            results = run(xmin, cats, rebin)
-            failing = summary_line(xmin, results, rebin)
-            if not failing or xmin + args.scan_step > args.scan_max_unbinned + 1e-9:
-                break
-            xmin += args.scan_step
-        if failing:
-            log(f"Stage 2: rebin the failing categories at xmin = {xmin:g} GeV")
-            for c in failing:
-                for fac in args.rebin_factors:
-                    rebin[c] = fac
-                    results[c] = run(xmin, [c], rebin)[c]
-                    ok = bool(results[c][2])
-                    log(f"  {c}: rebin {fac} -> {'pass' if ok else 'fail'}")
-                    if ok:
-                        break
-            failing = summary_line(xmin, results, rebin)
-        if failing:
-            log("Stage 3: raise the lower edge further")
-            while failing and xmin + args.scan_step <= args.scan_max + 1e-9:
-                xmin += args.scan_step
-                results = run(xmin, cats, rebin)
-                for c in [c for c in cats if not results[c][2]]:
-                    for fac in [f for f in args.rebin_factors if f > rebin[c]]:
-                        rebin[c] = fac
-                        results[c] = run(xmin, [c], rebin)[c]
-                        if results[c][2]:
-                            break
-                failing = summary_line(xmin, results, rebin)
+        cache = {}
+
+        def evaluate(x, c, fac):
+            if (x, c, fac) not in cache:
+                cache[(x, c, fac)] = fit_category(ROOT, raw[c], c, x, args.xmax, fac, args.functions, pthr)
+            res = cache[(x, c, fac)]
+            return res, bool(res[2])
+
+        xmin, rebin, results, failing = scan_fit_range(
+            evaluate, cats, args.xmin, args.scan_step, args.scan_max_unbinned, args.scan_max,
+            args.rebin_factors, log)
         if failing:
             log(f"WARNING: no acceptable configuration found up to xmin = {xmin:g} GeV; "
                 f"failing categories: {', '.join(failing)}")
         log(f"Selected fit range: [{xmin:g}, {args.xmax:g}] GeV")
 
     # ---- plots and outputs for the final configuration
-    payload = dict(fit_range=[xmin, args.xmax], pvalue_threshold=pthr, ftest_threshold=fthr,
+    payload = dict(fit_range=[xmin, args.xmax], pvalue_threshold=pthr,
+                   selection="per family: the acceptable function with the fewest parameters; "
+                             "default: the selected function with the highest p-value",
                    functions=args.functions,
                    function_definitions={f: B.describe(f) for f in args.functions},
-                   integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={})
+                   integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={},
+                   dropped_categories={})
     md = ["# Background fits\n", f"Fit range: [{xmin:g}, {args.xmax:g}] GeV  ",
-          f"Pass criteria: status 0, covQual 3, no parameter at limit, p > {pthr:g}, "
-          f"F-test (threshold {fthr:g}) within each family\n", "## Scan / configuration log\n",
+          f"Acceptable fit: status 0, covQual 3, no parameter at limit, p > {pthr:g}. Per family, "
+          "the acceptable function with the fewest parameters passes; the passing function with "
+          "the highest p-value is the default.\n", "## Scan / configuration log\n",
           "```", *scan_log, "```\n"]
     label = category_labels(cats)
     for c in cats:
         h, fits, passing = results[c]
         edges = bin_edges_in_window(raw[c], xmin, args.xmax, rebin[c])
         if rebin[c] != 1:
-            print(f"NOTE: category {c} is rebinned by {rebin[c]}: {binning_label(edges)}")
+            print(f"WARNING: category {c} is rebinned by {rebin[c]} ({binning_label(edges)}); "
+                  "build_workspace.py will refuse it (Combine evaluates the pdfs at the bin centres)",
+                  file=sys.stderr)
         for f in fits:
             labels = [label[c],
                       f"status {f['status']}, covQual {f['cov_qual']}",
@@ -210,14 +210,20 @@ def main():
                      fit_label=f"{f['name']} fit")
         best = max((f for f in fits if f["name"] in passing), key=lambda f: f["pvalue"],
                    default=None)
-        payload["categories"][c] = dict(
+        entry = dict(
             rebin=rebin[c], bin_edges=edges, binning=binning_label(edges),
             n_data=h.Integral(), passing=passing, best=best["name"] if best else None,
             fits={f["name"]: public(f) for f in fits})
+        if not passing and args.drop_failing_categories:
+            entry["reason"] = "no passing background function"
+            payload["dropped_categories"][c] = entry
+            print(f"WARNING: category {c} has no passing background function: dropped", file=sys.stderr)
+        else:
+            payload["categories"][c] = entry
         md += [f"## {c}\n", f"Binning: {binning_label(edges)}"
                + (f" (**rebinned by {rebin[c]}**)" if rebin[c] != 1 else "") + "  ",
                f"Passing: {', '.join(passing) or 'NONE'}; best p-value: {best['name'] if best else '-'}\n",
-               "| function | status | covQual | chi2/ndf | p-value | F-test p (next order) | "
+               "| function | status | covQual | chi2/ndf | p-value | F-test p vs next order (info) | "
                "warn/err | verdict |", "|---|---|---|---|---|---|---|---|"]
         for f in fits:
             fp = f.get("ftest_next")
@@ -236,8 +242,11 @@ def main():
     ne = sum(f["n_errors"] for c in cats for f in results[c][1])
     print(f"\nRooFit/Minuit messages in the final fits: {nw} warnings, {ne} errors")
     print(f"Written {outdir / 'background_fits.json'}, {outdir / 'background_summary.md'}")
-    if any(not results[c][2] for c in cats):
-        sys.exit("ERROR: some categories have no passing background function")
+    if not payload["categories"]:
+        sys.exit("ERROR: no category has a passing background function")
+    if any(not results[c][2] for c in cats) and not args.drop_failing_categories:
+        sys.exit("ERROR: some categories have no passing background function "
+                 "(use --drop-failing-categories to leave them out)")
 
 
 if __name__ == "__main__":

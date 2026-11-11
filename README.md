@@ -47,17 +47,25 @@ The fit range is the same for all categories and is always given on the command 
 `run_all.sh` (150–600 GeV; scan limits 190 and 250 GeV), overridable with environment
 variables. With `--scan` the lower edge is raised in 5 GeV steps (up to `--scan-max-unbinned`)
 until every category has at least one passing function; then failing categories are rebinned
-(2, 5, 10 bins merged), and only then is the lower edge raised further (up to `--scan-max`).
-Rebinning is applied only where needed and is logged. Signal mass points closer than 10 GeV
-to the lower edge are dropped (with the defaults, M200 is dropped above 190 GeV).
+(2, 5, 10 bins merged, smallest factor that works), and only then is the lower edge raised
+further (up to `--scan-max`), each category restarting from no rebinning at every step.
+Rebinning is applied only where needed and is logged. Note that `build_workspace.py` refuses
+categories with bins wider than 1 GeV, because Combine evaluates the pdfs at the bin centres
+(see `docs/OUTPUT_FORMAT.md`). A category without any passing function stops the workflow,
+unless `DROP_FAILING_CATEGORIES=1` (`fit_background.py --drop-failing-categories`) is set, in
+which case it is left out and listed in `background_fits.json`. Signal mass points closer than
+10 GeV to either edge of the fit range (or outside it) are dropped (with the defaults, M200 is
+dropped above 190 GeV).
 
 ### Background functions and selection
 
 Families `dijet` (CMS standard dijet function), `moddijet` ((1−x^{1/3}) variant) and `ua2`,
 with 3, 4, 5 parameters (incl. normalisation); 6-parameter variants can be requested with
-`--functions`. A function passes if the fit has status 0, covariance quality 3, no parameter
-at a limit, goodness-of-fit p > 0.05, and its order is not above the order chosen by the Fisher
-F-test in its family. All passing functions enter the `RooMultiPdf` of the category.
+`--functions`. A fit is acceptable if it has status 0, covariance quality 3, no parameter at a
+limit and goodness-of-fit p > 0.05. In each family, the acceptable function with the fewest
+parameters is selected; the selected functions (at most one per family) enter the `RooMultiPdf`
+of the category, and the one with the highest p-value is its default. (The F-test p-value
+against the next order is reported in `background_summary.md` for information only.)
 
 ### Signal fits
 
@@ -66,8 +74,17 @@ Double-sided `RooCrystalBall` (common σ). The fit releases the parameters in st
 determine (the tail lies outside the fit range, or n runs to its limit, i.e. the tail is
 exponential) is fixed and recorded in `signal_fits.json`. The templates are weighted (MC counts
 × L / N_processed); by default they are fitted as weighted histograms with SumW2-corrected
-uncertainties. `--weights counts` fits the MC counts instead (Poisson errors) and scales the
-yield back, which is equivalent for uniform weights.
+uncertainties; for the fit the weights are rescaled to a mean of 1 (and the yield scaled back),
+because Minuit's convergence criterion depends on the overall scale of the likelihood.
+`--weights counts` fits the MC counts instead (Poisson errors) and scales the yield back, which
+is equivalent for uniform weights.
+
+A signal fit is *failed* if it has status != 0, covariance quality != 3 or a parameter at its
+limit (after the fixing rules); failed fits are kept in `signal_fits.json` but not used for
+the parametrisation. The goodness-of-fit p-value is reported as a quality figure and does not
+reject fits. In the parametrisation, each parameter is interpolated only through the mass points
+where it was floating in the fit (values fixed by the procedure are not measurements), or
+through all points if fewer than two of them float.
 
 ## Tests
 

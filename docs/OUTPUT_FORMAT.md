@@ -29,7 +29,7 @@ parameter is shared between them, except the signal mass `MH`.
 | `ZprimeQQ_CAT_mean`, `_sigma`, `_alphaL`, `_nL`, `_alphaR`, `_nR` | `RooFormulaVar(MH)` | signal shape parameters as functions of `MH` |
 | `ZprimeQQ_CAT_norm` | `RooFormulaVar(MH)` | expected signal yield **inside the fit range** for σ(pp→Z'→qq) = **1 nb** and the luminosity given to `prepare_inputs.py` (default 680000 nb⁻¹) |
 | `bkg_CAT` | `RooMultiPdf` (Combine) | background model: discrete choice among the accepted functions |
-| `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default = the function with the best goodness of fit |
+| `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default = the function with the highest goodness-of-fit p-value |
 | `bkg_CAT_<func>` | `RooGenericPdf` | each accepted background function (e.g. `bkg_CAT_dijet5`) |
 | `<func>_p<k>_CAT` | `RooRealVar` | parameters of background function `<func>` (floating, set to the fitted values) |
 | `bkg_CAT_norm` | `RooRealVar` | background yield in the fit range (floating; set to the fitted value of the default function) |
@@ -42,23 +42,28 @@ Notes:
   of `eventsProcessed` in the signal file), i.e. to σ = 1 nb. A Combine signal strength `r`
   is therefore the cross section × branching fraction in nb.
 * **Signal parametrisation**: by default a natural cubic spline through the values fitted at the
-  mass points (polynomials can be chosen in `parametrize_signal.py`). Each function is clamped
-  to the range allowed in the fits (e.g. n ≥ 0.5), so interpolation cannot produce an invalid
-  shape. `MH` is limited to the range of the mass points: no extrapolation.
+  mass points (polynomials can be chosen in `parametrize_signal.py`). The functions are clamped
+  so that interpolation cannot produce an invalid shape: `alphaL`, `alphaR`, `nL`, `nR` to the
+  ranges allowed in the signal fits (α in [0.1, 8], n in [0.5, 100]), `sigma` to at least 1 GeV,
+  the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
+  covered by every category: no extrapolation.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
   the families `dijet`, `moddijet` and `ua2` with 3–5 parameters (the number includes the
   normalisation). The formulas are written in a numerically decorrelated basis: the fitted
   parameters `<func>_p<k>_CAT` are linear combinations of the parameters of the published form,
   and have uncertainties of order 1. The function family is unchanged; the coefficients of the
   published form are in `background_fits.json` (`params_original`).
-* **Only functions that pass** the selection (fit status 0, covariance quality 3, no parameter at
-  a limit, goodness-of-fit p-value > 0.05, Fisher F-test within the family) enter `bkg_CAT`.
+* **Background functions in `bkg_CAT`**: a fit is acceptable if it has status 0, covariance
+  quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05; in each family, the
+  acceptable function with the fewest parameters is used (at most one function per family).
 * The background pdfs carry their own numerical integrator settings (adaptive Gauss–Kronrod,
   relative precision 1e-10), which the fits need for these sample sizes (~2×10⁷ events/category).
-* **Binning**: the fits use 1 GeV bins unless a category had to be rebinned (logged in
-  `background_fits.json` and `background_summary.md`; the binning is stored in `mjj_CAT`).
-  For bins wider than 1 GeV the fits integrate the pdfs over each bin; Combine evaluates
-  pdfs at the bin centres, which for wide bins and these sample sizes is not equivalent.
+* **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in
+  `mjj_CAT`). Combine evaluates the pdfs at the bin centres; for wider bins (a category rebinned
+  by the fit-range scan) the fits integrate the pdfs over each bin instead, and bin-centre
+  evaluation would be biased by many standard deviations for these sample sizes. So
+  `build_workspace.py` stops with an error for any category with bins wider than 1 GeV; the
+  rebinned fit results remain available for inspection.
 * `RooMultiPdf` is a Combine class: reading `bkg_CAT` needs the Combine library
   (`gSystem->Load("libHiggsAnalysisCombinedLimit")`). With `build_workspace.py --no-multipdf`
   the file contains everything except the `RooMultiPdf` objects.

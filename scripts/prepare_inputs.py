@@ -30,6 +30,16 @@ from dijetfit.common import (DATA_NAME, mass_from_filename, select_categories,  
                              setup_root, signal_hist_name)
 
 
+def bin_edges(h):
+    ax = h.GetXaxis()
+    return [ax.GetBinLowEdge(i) for i in range(1, ax.GetNbins() + 2)]
+
+
+def same_binning(a, b):
+    ea, eb = bin_edges(a), bin_edges(b)
+    return len(ea) == len(eb) and all(abs(x - y) <= 1e-9 * max(1.0, abs(x)) for x, y in zip(ea, eb))
+
+
 def histogram_names(tfile):
     """Names of the 1D histograms at the top level of `tfile`."""
     return [k.GetName() for k in tfile.GetListOfKeys() if k.GetClassName().startswith("TH1")]
@@ -106,7 +116,14 @@ def main():
         print(f"M = {mass} GeV: {Path(path).name}, N_processed = {nproc:.8g}, "
               f"scale = lumi/N = {scale:.6g} (1 nb)")
         for cat in sorted(cats):
-            h = f.Get(cats[cat]).Clone(signal_hist_name(mass))
+            src = f.Get(cats[cat])
+            if not same_binning(src, fdata.Get(cats[cat])):
+                sys.exit(f"ERROR: {path}: histogram {cats[cat]} has a different binning from the "
+                         f"data histogram ({src.GetNbinsX()} bins in [{src.GetXaxis().GetXmin():g}, "
+                         f"{src.GetXaxis().GetXmax():g}] vs {fdata.Get(cats[cat]).GetNbinsX()} bins in "
+                         f"[{fdata.Get(cats[cat]).GetXaxis().GetXmin():g}, "
+                         f"{fdata.Get(cats[cat]).GetXaxis().GetXmax():g}])")
+            h = src.Clone(signal_hist_name(mass))
             h.SetDirectory(0)
             if h.GetSumw2N() == 0:
                 h.Sumw2()

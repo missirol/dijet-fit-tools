@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Step 4: parametrise the signal shape and yield as a function of the resonance mass.
 
-For every category, each Crystal Ball parameter (mean, sigma, alphaL, nL, alphaR, nR) and
+Only usable signal fits enter (failed fits, see fit_signal.py, are left out and listed). For
+every category, each Crystal Ball parameter (mean, sigma, alphaL, nL, alphaR, nR) and
 the yield inside the fit range (norm, for 1 nb) is interpolated in the mass with a natural
 cubic spline (default) or a polynomial of order N ('polN'), chosen with --default-model
-and --model PARAM=MODEL. Parameters fixed in the fits (see signal_fits.json) enter with their
-fixed values. In the workspace the interpolated parameters are clamped to the ranges allowed
-in the fits (e.g. n >= 0.5), so that interpolation can never produce an invalid shape.
+and --model PARAM=MODEL. Each parameter is interpolated only through the mass points where it was
+floating in the fit: a value fixed at a limit (or because the tail lies outside the fit range)
+is set by the fitting procedure, not measured; with fewer than two floating points, all points
+are used. In the workspace the interpolated parameters are clamped (CLAMP below) so that
+interpolation can never produce an invalid shape: alphaL, alphaR and nL, nR to the ranges
+allowed in the signal fits, sigma to at least 1 GeV and the yield to non-negative values; the
+mean is not clamped. Polynomial models are fits: their plots have a pull sub-pad.
 
 Outputs (in --outdir):
   signal_parametrisation.json         interpolation models per category and parameter
@@ -50,9 +55,22 @@ def param_plot(ROOT, path, formats, cat, label, name, masses, vals, errs, fixed,
     xs = np.linspace(min(masses), max(masses), 200)
     ys = [clamp(interp.evaluate(model, v), name) for v in xs]
     curve = ROOT.TGraph(len(xs), array("d", xs), array("d", ys))
-    c = ROOT.TCanvas("c", "", 700, 550)
-    c.SetLeftMargin(0.15)
-    c.SetGrid()
+    is_fit = model["kind"] == "poly"  # a spline interpolates: its pulls would all be zero
+    c = ROOT.TCanvas("c", "", 700, 700 if is_fit else 550)
+    if is_fit:
+        top = ROOT.TPad("top", "", 0, 0.3, 1, 1)
+        bot = ROOT.TPad("bot", "", 0, 0, 1, 0.3)
+        top.SetBottomMargin(0.03)
+        bot.SetTopMargin(0.03)
+        bot.SetBottomMargin(0.32)
+        for pd in (top, bot):
+            pd.SetLeftMargin(0.15)
+            pd.SetGrid()
+            pd.Draw()
+        top.cd()
+    else:
+        c.SetLeftMargin(0.15)
+        c.SetGrid()
     lo = min(min(v - e for v, e in zip(vals, errs)), min(ys))
     hi = max(max(v + e for v, e in zip(vals, errs)), max(ys))
     pad = 0.15 * (hi - lo) if hi > lo else 1.0
@@ -81,8 +99,31 @@ def param_plot(ROOT, path, formats, cat, label, name, masses, vals, errs, fixed,
     t.SetTextSize(0.033)
     desc = "natural cubic spline" if model["kind"] == "spline" else f"pol{model['order']} fit"
     t.AddText(f"{label}: {name}, {desc}"
-              + ("  (open circles: fixed in the fit)" if gf else ""))
+              + ("  (open circles: fixed in the fit, not used if enough points float)" if gf else ""))
+    if is_fit:
+        t.AddText(f"#chi^{{2}}/ndf = {model['chi2']:.2f}/{model['ndf']}"
+                  + ("" if model.get("weighted", True) else " (equal weights: some points have no error)"))
     t.Draw()
+    keep = []
+    if is_fit:
+        # pull = (fitted value - polynomial) / uncertainty, for points with an uncertainty
+        bot.cd()
+        pm = [m for m, e in zip(masses, errs) if e > 0]
+        pv = [(v - interp.evaluate(model, m)) / e for m, v, e in zip(masses, vals, errs) if e > 0]
+        fr = bot.DrawFrame(min(masses) - 25, -4.9, max(masses) + 25, 4.9)
+        fr.GetXaxis().SetTitle("m_{Z'} [GeV]")
+        fr.GetXaxis().SetTitleSize(0.12)
+        fr.GetXaxis().SetLabelSize(0.10)
+        fr.GetYaxis().SetTitle("#frac{value - fit}{#sigma}")
+        fr.GetYaxis().SetTitleSize(0.10)
+        fr.GetYaxis().SetTitleOffset(0.6)
+        fr.GetYaxis().SetLabelSize(0.10)
+        fr.GetYaxis().SetNdivisions(505)
+        if pm:
+            gp = ROOT.TGraph(len(pm), array("d", pm), array("d", pv))
+            gp.SetMarkerStyle(20)
+            gp.Draw("P")
+            keep.append(gp)
     for fmt in formats:
         c.SaveAs(f"{path}.{fmt}")
     c.Close()
@@ -180,16 +221,28 @@ def main():
                    clamp={k: list(v) for k, v in CLAMP.items()}, categories={})
     label = category_labels(fits["categories"])
     for cat, cd in sorted(fits["categories"].items()):
-        masses = sorted(int(m) for m in cd["fits"])
+        fitted = sorted(int(m) for m in cd["fits"])
+        masses = [m for m in fitted if cd["fits"][str(m)].get("usable", True)]
+        excluded = [m for m in fitted if m not in masses]
+        if excluded:
+            print(f"{cat}: failed signal fits at {excluded} GeV are not used", file=sys.stderr)
         if len(masses) < 2:
-            sys.exit(f"ERROR: {cat}: fewer than 2 mass points")
+            sys.exit(f"ERROR: {cat}: fewer than 2 usable signal fits")
         models = {}
         for k in ALL_PARAMS:
             vals = [cd["fits"][str(m)]["params"][k]["value"] for m in masses]
             errs = [cd["fits"][str(m)]["params"][k]["error"] for m in masses]
             fixed = [cd["fits"][str(m)]["params"][k].get("constant", False) for m in masses]
-            models[k] = interp.build(choice[k], masses, vals, errs)
-            models[k].update(points=dict(masses=masses, values=vals, errors=errs, fixed=fixed),
+            # interpolate through the points where the parameter was determined by the fit;
+            # values fixed at a limit (or because the tail is outside the fit range) are set by
+            # the fitting procedure, not measured (fewer than 2 such points: use all points)
+            use = [i for i, f in enumerate(fixed) if not f]
+            if len(use) < 2:
+                use = list(range(len(masses)))
+            models[k] = interp.build(choice[k], [masses[i] for i in use], [vals[i] for i in use],
+                                     [errs[i] for i in use])
+            models[k].update(points=dict(masses=masses, values=vals, errors=errs, fixed=fixed,
+                                         used_for_interpolation=[masses[i] for i in use]),
                              clamp=list(CLAMP[k]))
             param_plot(ROOT, str(outdir / "plots" / f"param_{cat}_{k}"), args.formats, cat, label[cat], k,
                        masses, vals, errs, fixed, models[k])
@@ -199,7 +252,8 @@ def main():
             templates[m] = window_hist(ROOT, raw, xmin, xmax, cd["rebin"], name=f"{cat}_{m}_t")
         model_plot(ROOT, str(outdir / "plots" / f"model_{cat}"), args.formats, cat, models,
                    templates, xmin, xmax)
-        payload["categories"][cat] = dict(masses=masses, rebin=cd["rebin"], models=models)
+        payload["categories"][cat] = dict(masses=masses, excluded_masses=excluded, rebin=cd["rebin"],
+                                          models=models)
         print(f"{cat}: masses {masses}, models: "
               + ", ".join(f"{k}={choice[k]}" for k in ALL_PARAMS))
     write_json(outdir / "signal_parametrisation.json", payload)

@@ -157,14 +157,49 @@ def _fake(name, chi2, ok=True, p=0.5):
 
 def test_ftest_and_selection():
     nb = 450
-    # adding one parameter improves chi2 by 0.5: not significant
+    # adding one parameter improves chi2 by 0.5: not significant (F-test reported for information)
     assert B.ftest(_fake("dijet4", 450.5), _fake("dijet5", 450.0), nb) > 0.4
     assert B.ftest(_fake("dijet4", 520.0), _fake("dijet5", 450.0), nb) < 1e-10
     fits = [_fake("dijet3", 900, p=1e-20), _fake("dijet4", 455, p=0.4), _fake("dijet5", 454.8, p=0.4),
-            _fake("ua23", 470, p=0.2, ok=False), _fake("ua24", 460, p=0.3), _fake("ua25", 459, p=0.3)]
-    v = B.select_functions(fits, nb, 0.05, 0.05)
+            _fake("ua23", 470, p=0.2, ok=False), _fake("ua24", 460, p=0.3), _fake("ua25", 459, p=0.3),
+            _fake("moddijet3", 480, p=0.06), _fake("moddijet4", 440, p=0.8)]
+    v = B.select_functions(fits, nb, 0.05)
+    # per family: the acceptable function with the fewest parameters
     assert v["dijet3"].startswith("fail: p-value")
     assert v["dijet4"] == "pass"
-    assert v["dijet5"] == "fail: F-test prefers dijet4"
+    assert v["dijet5"] == "not used: dijet4 has fewer parameters"
     assert v["ua23"].startswith("fail: status")
-    assert v["ua24"] == "pass" and v["ua25"].startswith("fail: F-test")
+    assert v["ua24"] == "pass" and v["ua25"].startswith("not used: ua24")
+    # moddijet3 passes p > 0.05 although the next order is much better (by design)
+    assert v["moddijet3"] == "pass" and v["moddijet4"].startswith("not used: moddijet3")
+    assert sorted(n for n, x in v.items() if x == "pass") == ["dijet4", "moddijet3", "ua24"]
+    assert fits[6]["ftest_next"] < 1e-6  # F-test vs moddijet4 stored for information
+
+
+def test_parameter_at_limit_is_reported_after_the_last_attempt(ROOT, fit_range, monkeypatch):
+    """Regression test: a parameter that still ends at its limit after the last re-centring must
+    be reported, and the fit must fail the quality requirement, even though Minuit reports a
+    good fit (status 0, covQual 3). A narrow parameter range (QRANGE, in units of the parameter
+    uncertainties) makes the parameters hit their limits: the minimum of the bin-centre fit is
+    ~0.7 sigma away from the starting values for this histogram."""
+    h = asimov(ROOT, fit_range, integrate=True, name="asimov_lim")
+    monkeypatch.setattr(B, "QRANGE", 0.05)
+    monkeypatch.setattr(B, "MAX_RECENTRE", 1)
+    r = B.fit_function(ROOT, "dijet4", h, "t_lim")
+    assert r["params_at_limit"], r["params"]
+    assert r["status"] == 0 and r["cov_qual"] == 3  # Minuit alone would not notice
+    assert not B.fit_quality_ok(r)
+    # with enough re-centring attempts the same fit ends inside the (moved) ranges
+    monkeypatch.setattr(B, "QRANGE", 1.0)
+    monkeypatch.setattr(B, "MAX_RECENTRE", 3)
+    r = B.fit_function(ROOT, "dijet4", h, "t_lim2")
+    assert not r["params_at_limit"] and B.fit_quality_ok(r)
+
+
+def test_yield_at_limit_is_reported(ROOT, fit_range):
+    """The yield parameter is also checked: an expectation outside its range is flagged."""
+    h = asimov(ROOT, fit_range, integrate=True, name="asimov_norm")
+    r = B.fit_function(ROOT, "dijet4", h, "t_norm")
+    assert not r["params_at_limit"]
+    x = ROOT.RooRealVar("x_n", "", 0.0, 0.0, 10.0)
+    assert B.at_limit_of(x) and not B.at_limit_of(ROOT.RooRealVar("y_n", "", 5.0, 0.0, 10.0))

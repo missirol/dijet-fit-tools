@@ -22,6 +22,7 @@ import pytest
 import synthetic as syn
 from conftest import REPO
 from dijetfit import background as B
+from dijetfit.histtools import window_hist
 
 pytestmark = pytest.mark.closure
 MAX_PULL = 4.0
@@ -47,10 +48,11 @@ def cat_name(cat):
     return syn.CATEGORY_PREFIX + cat
 
 
-def expected_masses(xmin, min_distance=10.0):
-    """Signal masses the workflow should use: those at least min_distance above the lower edge
-    (fit_signal.py --min-distance default)."""
-    return [m for m in syn.FIT_MASSES if m - xmin >= min_distance]
+def expected_masses(fit_range, min_distance=10.0):
+    """Signal masses the workflow should use: those at least min_distance inside both edges of
+    the fit range (fit_signal.py --min-distance default)."""
+    xmin, xmax = fit_range
+    return [m for m in syn.FIT_MASSES if xmin + min_distance <= m <= xmax - min_distance]
 
 
 # ---- step 1 -------------------------------------------------------------------------------------
@@ -67,7 +69,8 @@ def test_inputs_categories_and_normalisation(ROOT, run):
             h = f.Get(f"{cat_name(cat)}/ZprimeQQ_{m}")
             n_sel = run["truth"]["signal"][str(m)]["categories"][cat]["n_selected"]
             assert h.Integral() == pytest.approx(n_sel * scale, rel=1e-12)
-            assert h.GetBinError(300) ** 2 == pytest.approx(scale * h.GetBinContent(300), rel=1e-9)
+            b = h.GetMaximumBin()  # a well-populated bin: weight^2 x counts = scale x content
+            assert h.GetBinError(b) ** 2 == pytest.approx(scale * h.GetBinContent(b), rel=1e-9)
 
 
 # ---- step 2 -------------------------------------------------------------------------------------
@@ -94,9 +97,9 @@ def expected_counts_of_fit(ROOT, fit, edges, tag):
 def test_background_closure(ROOT, run):
     """The fit of the generating function (dijet4) reproduces the true expected spectrum in the
     fit range within the statistical precision, in every category; and the selection never
-    rejects it for its fit quality or goodness of fit. (It may be excluded by the F-test in
-    favour of a simpler member of its family that describes the data equally well, e.g. over a
-    short fit range; at least one function must pass.)
+    rejects it for its fit quality or goodness of fit. (It is not used if a member of its family
+    with fewer parameters is acceptable, e.g. over a short fit range; at least one function must
+    pass, and at most one per family.)
 
     Other functions are only required to describe the data, which is what the selection tests:
     a passing function may still differ from the truth by more than the statistics. That is the
@@ -110,7 +113,10 @@ def test_background_closure(ROOT, run):
         assert all(f["n_errors"] == 0 and f["status"] == 0 for f in cb["fits"].values())
         assert cb["passing"], cat
         gen = cb["fits"]["dijet4"]
-        assert gen["verdict"] == "pass" or gen["verdict"].startswith("fail: F-test"), (cat, gen["verdict"])
+        assert gen["verdict"] == "pass" or gen["verdict"].startswith("not used: dijet3"), (cat, gen["verdict"])
+        families = [B.parse_function(f)[0] for f in cb["passing"]]
+        assert len(families) == len(set(families)), cb["passing"]
+        assert cb["best"] == max(cb["passing"], key=lambda f: cb["fits"][f]["pvalue"])
         nu_true = syn.background_expected(cat)[sel]
         for name in sorted(set(cb["passing"]) | {"dijet4"}):
             fit = cb["fits"][name]
@@ -161,14 +167,14 @@ def test_signal_closure(ROOT, run):
     f = ROOT.TFile.Open(str(run["out"] / "inputs.root"))
     for cat in syn.CATEGORIES:
         cs = run["sig"]["categories"][cat_name(cat)]
-        assert cs["masses"] == expected_masses(xmin)
+        assert cs["masses"] == expected_masses((xmin, xmax))
         edges = run["bkg"]["categories"][cat_name(cat)]["bin_edges"]
-        lo, hi = np.array(edges[:-1]), np.array(edges[1:])
         for m in cs["masses"]:
             fit = cs["fits"][str(m)]
             assert fit["status"] == 0 and fit["cov_qual"] == 3 and fit["n_errors"] == 0
-            h = f.Get(f"{cat_name(cat)}/ZprimeQQ_{m}")
-            n = np.array([h.GetBinContent(h.FindFixBin(0.5 * (a + b))) for a, b in zip(lo, hi)]) / scale
+            h = window_hist(ROOT, f.Get(f"{cat_name(cat)}/ZprimeQQ_{m}"), xmin, xmax,
+                            run["bkg"]["categories"][cat_name(cat)]["rebin"], name=f"sc_{cat}_{m}")
+            n = np.array([h.GetBinContent(i) for i in range(1, h.GetNbinsX() + 1)]) / scale
             n_sel = run["truth"]["signal"][str(m)]["categories"][cat]["n_selected"]
             nu_true = n_sel * syn.signal_probabilities(m)[sel]
             nu_fit = fitted_signal_counts(fit, edges, scale)
@@ -201,7 +207,7 @@ def test_workspace_content(run, workspace):
     w = workspace
     mh = w.var("MH")
     assert mh and mh.isConstant()
-    masses = expected_masses(run["fit_range"][0])
+    masses = expected_masses(run["fit_range"])
     assert (mh.getMin(), mh.getMax()) == (min(masses), max(masses))
     for cat in syn.CATEGORIES:
         c = cat_name(cat)
@@ -209,6 +215,12 @@ def test_workspace_content(run, workspace):
                      f"pdfindex_{c}", f"mjj_{c}"):
             assert w.obj(name), name
         assert w.pdf(f"bkg_{c}").getNumPdfs() == len(run["bkg"]["categories"][c]["passing"])
+    # each parameter is interpolated through the masses where it was floating (if >= 2)
+    for c, cd in run["param"]["categories"].items():
+        for k, md in cd["models"].items():
+            pts = md["points"]
+            floating = [m for m, f in zip(pts["masses"], pts["fixed"]) if not f]
+            assert pts["used_for_interpolation"] == (floating if len(floating) >= 2 else pts["masses"]), (c, k)
     checks = run["ws"]["checks"]
     assert checks["max_rel_diff_signal_workspace_vs_parametrisation"] < 1e-9
     assert checks["max_abs_diff_bkg_chi2"] < 1e-6
@@ -221,7 +233,7 @@ def test_signal_model_at_a_mass_not_used_in_the_fits(ROOT, run, workspace):
     xmin, xmax = run["bkg"]["fit_range"]
     fval = ROOT.TFile.Open(run["truth"]["files"]["validation"][0])
     scale = syn.LUMI / syn.N_GENERATED
-    masses = expected_masses(xmin)
+    masses = expected_masses((xmin, xmax))
     validation = [m for m in syn.VALIDATION_MASSES if masses and masses[0] < m < masses[-1]]
     if not validation:
         pytest.skip("no validation mass inside the interpolation range for this fit range")
@@ -234,7 +246,8 @@ def test_signal_model_at_a_mass_not_used_in_the_fits(ROOT, run, workspace):
             nset = ROOT.RooArgSet(x)
             edges = run["bkg"]["categories"][c]["bin_edges"]
             lo, hi = np.array(edges[:-1]), np.array(edges[1:])
-            counts = np.array([h.GetBinContent(h.FindFixBin(0.5 * (a + b))) for a, b in zip(lo, hi)])
+            hw = window_hist(ROOT, h, xmin, xmax, run["bkg"]["categories"][c]["rebin"], name=f"val_{cat}_{m}")
+            counts = np.array([hw.GetBinContent(i) for i in range(1, hw.GetNbinsX() + 1)])
             norm = w.function(f"ZprimeQQ_{c}_norm").getVal() / scale  # in MC counts
             dens = []
             for a, b in zip(lo, hi):
@@ -285,7 +298,7 @@ pdfindex_{c} discrete
 """)
     sh = lambda *a: subprocess.run(a, cwd=tmp_path, capture_output=True, text=True)  # noqa: E731
     assert sh("text2workspace.py", "card.txt", "-o", "card.root").returncode == 0
-    masses = expected_masses(run["fit_range"][0])
+    masses = expected_masses(run["fit_range"])
     if len(masses) < 2:
         pytest.skip("fewer than two signal masses for this fit range")
     limits = {}
@@ -323,6 +336,158 @@ def test_fit_range_scan_cuts_a_turnon(ROOT, fit_range, tmp_path_factory):
     print(f"configured lower edge {xmin:g} GeV, turn-on centred at {turnon[0]:g} GeV: "
           f"scan selected {new_xmin:g} GeV")
     assert xmin < new_xmin <= xmin + 40.0
-    assert (new_xmin - xmin) % 5.0 == pytest.approx(0.0)
+    steps = (new_xmin - xmin) / 5.0
+    assert steps == pytest.approx(round(steps), abs=1e-9)
     assert all(c["rebin"] == 1 and c["passing"] for c in bkg["categories"].values())
-    assert any("xmin = " in line for line in bkg["scan_log"])
+    # the scan log shows that the fits failed at the configured lower edge
+    first = next(line for line in bkg["scan_log"] if "xmin = " in line)
+    assert f"xmin = {xmin:g} GeV" in first and "failing" in first, first
+
+
+# ---- options and error paths, on the closure inputs ------------------------------------------
+def script(name, *args):
+    return subprocess.run([sys.executable, str(REPO / "scripts" / name), *map(str, args)],
+                          capture_output=True, text=True)
+
+
+def first_category():
+    return cat_name(next(iter(syn.CATEGORIES)))
+
+
+def test_weights_counts_option_agrees_with_sumw2(run, tmp_path):
+    """--weights counts (fit the MC counts, scale the yield back) gives the same results as the
+    default SumW2 fit of the weighted templates: uniform weights."""
+    c = first_category()
+    p = script("fit_signal.py", run["out"] / "inputs.root", "--background",
+               run["out"] / "background" / "background_fits.json", "-o", tmp_path,
+               "--categories", c, "--weights", "counts", "--formats", "png")
+    assert p.returncode == 0, p.stderr[-2000:]
+    counts = json.loads((tmp_path / "signal_fits.json").read_text())
+    assert counts["weights"] == "counts"
+    for m, fc in counts["categories"][c]["fits"].items():
+        fs = run["sig"]["categories"][c]["fits"][m]
+        assert fc["status"] == 0 and fc["cov_qual"] == 3
+        for k in ("mean", "sigma", "norm"):
+            a, b = fs["params"][k], fc["params"][k]
+            assert abs(a["value"] - b["value"]) < 0.2 * a["error"], (m, k, a, b)
+            assert b["error"] == pytest.approx(a["error"], rel=0.1), (m, k, a, b)
+
+
+def test_polynomial_parametrisation_and_no_multipdf(ROOT, run, tmp_path):
+    """Polynomial signal models (with pull plots) and a workspace without RooMultiPdf."""
+    p = script("parametrize_signal.py", run["out"] / "signal" / "signal_fits.json", "--input",
+               run["out"] / "inputs.root", "-o", tmp_path / "param", "--default-model", "pol1",
+               "--model", "mean=pol2", "--formats", "png")
+    assert p.returncode == 0, p.stderr[-2000:]
+    par = json.loads((tmp_path / "param" / "signal_parametrisation.json").read_text())
+    for cd in par["categories"].values():
+        assert cd["models"]["mean"]["kind"] == "poly" and cd["models"]["mean"]["order"] == 2
+        assert cd["models"]["sigma"]["kind"] == "poly" and cd["models"]["sigma"]["order"] == 1
+    assert len(list((tmp_path / "param" / "plots").glob("param_*.png"))) == 7 * len(par["categories"])
+    ws = tmp_path / "ws" / "w.root"
+    p = script("build_workspace.py", "--input", run["out"] / "inputs.root", "--background",
+               run["out"] / "background" / "background_fits.json", "--signal",
+               tmp_path / "param" / "signal_parametrisation.json", "-o", ws, "--no-multipdf")
+    assert p.returncode == 0, p.stdout[-2000:] + p.stderr[-2000:]
+    f = ROOT.TFile.Open(str(ws))
+    w = f.Get("w")
+    classes = {o.ClassName() for o in w.components()}
+    assert "RooMultiPdf" not in classes
+    for c in par["categories"]:
+        cat = w.cat(f"pdfindex_{c}")
+        assert cat and cat.size() == len(run["bkg"]["categories"][c]["passing"])
+        for fn in run["bkg"]["categories"][c]["passing"]:
+            assert w.pdf(f"bkg_{c}_{fn}")
+    f.Close()
+
+
+def test_workspace_refuses_bins_wider_than_1gev(run, tmp_path):
+    bkg = json.loads((run["out"] / "background" / "background_fits.json").read_text())
+    c = first_category()
+    e = bkg["categories"][c]["bin_edges"]
+    bkg["categories"][c]["bin_edges"] = e[::2] + ([e[-1]] if (len(e) - 1) % 2 else [])
+    bkg["categories"][c]["binning"] = "2 GeV bins (test)"
+    (tmp_path / "bkg.json").write_text(json.dumps(bkg))
+    p = script("build_workspace.py", "--input", run["out"] / "inputs.root", "--background",
+               tmp_path / "bkg.json", "--signal", run["out"] / "signal_param" / "signal_parametrisation.json",
+               "-o", tmp_path / "w.root")
+    assert p.returncode != 0
+    assert "bins wider than 1 GeV" in p.stderr and c in p.stderr and "bin-centre" in p.stderr
+    assert not (tmp_path / "w.root").exists()
+
+
+def test_drop_failing_categories(run, tmp_path):
+    """With a goodness-of-fit threshold that one category cannot meet, fit_background.py stops;
+    with --drop-failing-categories it leaves that category out and lists it."""
+    xmin, xmax = run["fit_range"]
+    pvals = {c: v["fits"]["dijet4"]["pvalue"] for c, v in run["bkg"]["categories"].items()}
+    worst = min(pvals, key=pvals.get)
+    others = sorted(v for c, v in pvals.items() if c != worst)
+    thr = 0.5 * (pvals[worst] + others[0])
+    args = [run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax, "--functions", "dijet4",
+            "--pvalue-threshold", thr, "--formats", "png"]
+    p = script("fit_background.py", *args, "-o", tmp_path / "a")
+    assert p.returncode != 0 and "drop-failing-categories" in p.stderr
+    p = script("fit_background.py", *args, "-o", tmp_path / "b", "--drop-failing-categories")
+    assert p.returncode == 0, p.stderr[-2000:]
+    out = json.loads((tmp_path / "b" / "background_fits.json").read_text())
+    assert list(out["dropped_categories"]) == [worst]
+    assert out["dropped_categories"][worst]["reason"] == "no passing background function"
+    assert sorted(out["categories"]) == sorted(c for c in pvals if c != worst)
+
+
+def test_signal_binning_must_match_data(ROOT, run, tmp_path):
+    """prepare_inputs.py refuses signal histograms whose binning differs from the data."""
+    from array import array
+    path = tmp_path / "ZprimeQQ_M300_rebinned.root"
+    f = ROOT.TFile(str(path), "RECREATE")
+    lo, hi = syn.HIST_RANGE
+    for name in syn.category_names().values():
+        h = ROOT.TH1D(name, "", int((hi - lo) / 2), array("d", np.arange(lo, hi + 1, 2.0)))
+        h.Fill(300.0)
+        h.Write()
+    ev = ROOT.TH1D("eventsProcessed", "", 1, 0, 1)
+    ev.SetBinContent(1, 100.0)
+    ev.Write()
+    f.Close()
+    cfg = syn.workflow_config(*run["fit_range"])
+    p = script("prepare_inputs.py", "--data", run["truth"]["files"]["data"], "--signal", path,
+               "--categories", cfg["CATEGORIES"], "--exclude", cfg["EXCLUDE"], "-o", tmp_path / "in.root")
+    assert p.returncode != 0 and "different binning" in p.stderr, p.stderr[-2000:]
+
+
+def test_masses_near_the_upper_edge_are_dropped(run, tmp_path):
+    """A signal mass closer than --min-distance to the upper edge of the fit range is dropped."""
+    bkg = json.loads((run["out"] / "background" / "background_fits.json").read_text())
+    xmin = bkg["fit_range"][0]
+    top = max(syn.FIT_MASSES)
+    bkg["fit_range"] = [xmin, top + 5.0]  # 5 GeV above the highest mass < default distance 10
+    if top + 5.0 > syn.HIST_RANGE[1] or xmin + 10.0 > min(syn.FIT_MASSES):
+        pytest.skip("fit range not suitable for this check")
+    (tmp_path / "bkg.json").write_text(json.dumps(bkg))
+    c = first_category()
+    p = script("fit_signal.py", run["out"] / "inputs.root", "--background", tmp_path / "bkg.json",
+               "-o", tmp_path / "sig", "--categories", c, "--formats", "png")
+    assert p.returncode == 0, p.stderr[-2000:]
+    out = json.loads((tmp_path / "sig" / "signal_fits.json").read_text())
+    assert top in out["categories"][c]["dropped"] and top not in out["categories"][c]["masses"]
+
+
+def test_failed_signal_fits_are_not_parametrised(run, tmp_path):
+    """A signal fit flagged as failed is left out of the parametrisation and listed."""
+    sig = json.loads((run["out"] / "signal" / "signal_fits.json").read_text())
+    c = first_category()
+    masses = sig["categories"][c]["masses"]
+    if len(masses) < 3:
+        pytest.skip("needs at least three signal masses")
+    bad = masses[1]
+    assert all(f["usable"] for f in sig["categories"][c]["fits"].values())
+    sig["categories"][c]["fits"][str(bad)]["usable"] = False
+    (tmp_path / "sig.json").write_text(json.dumps(sig))
+    p = script("parametrize_signal.py", tmp_path / "sig.json", "--input", run["out"] / "inputs.root",
+               "-o", tmp_path / "param", "--formats", "png")
+    assert p.returncode == 0, p.stderr[-2000:]
+    par = json.loads((tmp_path / "param" / "signal_parametrisation.json").read_text())
+    assert par["categories"][c]["excluded_masses"] == [bad]
+    assert bad not in par["categories"][c]["masses"]
+    assert bad not in par["categories"][c]["models"]["norm"]["points"]["masses"]

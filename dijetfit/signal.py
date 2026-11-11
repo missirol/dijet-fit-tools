@@ -56,10 +56,15 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
     The templates are MC counts scaled by a common weight w = lumi * (1 nb) / N_processed.
     weights selects how this is handled:
       sumw2      : fit the weighted template, errors corrected with SumW2Error (default);
+                   the weights are first rescaled to a mean of 1 (the yield is scaled back):
+                   neither the SumW2 errors nor the parameters depend on this overall scale,
+                   but Minuit's convergence criterion does (a likelihood scaled by a small
+                   weight converges much less precisely);
       counts     : fit the raw counts (hist / w) with Poisson errors and scale the yield back
                    by w (exact MC uncertainties, no covariance correction needed); falls back
                    to 'sumw2' if the weights are not uniform;
-      asymptotic : fit the weighted template, errors from AsymptoticError;
+      asymptotic : fit the weighted template, errors from AsymptoticError (weights rescaled to a
+                   mean of 1 as for sumw2);
       none       : fit the weighted template without error correction (errors not valid for
                    weighted data; for comparisons only)."""
     if weights not in WEIGHT_MODES:
@@ -67,12 +72,23 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
     w_common = common_weight(hist) if weights == "counts" else None
     if weights == "counts" and w_common is None:
         weights = "sumw2"
+    scale_back = 1.0
     if w_common is not None:
         hist = hist.Clone(hist.GetName() + "_counts")
         hist.SetDirectory(0)
         hist.Scale(1.0 / w_common)
         for i in range(1, hist.GetNbinsX() + 1):
             hist.SetBinError(i, max(hist.GetBinContent(i), 0.0) ** 0.5)
+        scale_back = w_common
+    elif weights in ("sumw2", "asymptotic"):
+        sumw = sum(hist.GetBinContent(i) for i in range(1, hist.GetNbinsX() + 1))
+        sumw2 = sum(hist.GetBinError(i) ** 2 for i in range(1, hist.GetNbinsX() + 1))
+        if sumw > 0 and sumw2 > 0:
+            mean_w = sumw2 / sumw  # mean event weight (sum w^2 / sum w)
+            hist = hist.Clone(hist.GetName() + "_unitw")
+            hist.SetDirectory(0)
+            hist.Scale(1.0 / mean_w)  # scales contents and errors: weights w / mean_w
+            scale_back = mean_w
     lo, hi, n = hist_arrays(hist)
     xmin, xmax = float(lo[0]), float(hi[-1])
     edges = list(lo) + [xmax]
@@ -188,7 +204,7 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
         if v.getVal() - v.getMin() < 1e-3 * span or v.getMax() - v.getVal() < 1e-3 * span:
             at_limit.append(name)
 
-    wscale = w_common if w_common is not None else 1.0
+    wscale = scale_back
     nu = nu * wscale
 
     nset = ROOT.RooArgSet(x)

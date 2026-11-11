@@ -28,6 +28,7 @@ INTEGRATOR_EPS_REL = 1e-10
 BIN_INTEGRATION_ABOVE = 1.0 + 1e-6  # GeV: bins wider than this are integrated over
 BIN_INTEGRATION_PRECISION = 1e-10
 QRANGE = 50.0  # half-range of the decorrelated parameters (their errors are ~1)
+MAX_RECENTRE = 3  # re-centring attempts for a parameter that ends at its limit
 
 _X = f"(@0/{SQRTS!r})"
 
@@ -210,6 +211,12 @@ def make_pdf(ROOT, pdf_name, func, arglist, formula):
     return pdf
 
 
+def at_limit_of(var, frac=1e-3):
+    """True if a RooRealVar is within frac x (its range) of either end of its range."""
+    span = var.getMax() - var.getMin()
+    return var.getVal() - var.getMin() < frac * span or var.getMax() - var.getVal() < frac * span
+
+
 def needs_bin_integration(lo, hi):
     return bool(np.max(hi - lo) > BIN_INTEGRATION_ABOVE)
 
@@ -271,16 +278,19 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
     opts = [ROOT.RooFit.Save(True), ROOT.RooFit.PrintLevel(-1), ROOT.RooFit.Strategy(strategy),
             ROOT.RooFit.Offset(True), ROOT.RooFit.Extended(True),
             ROOT.RooFit.IntegrateBins(BIN_INTEGRATION_PRECISION if integrate else -1)]
-    # a parameter that ends at its limit: re-centre its range and repeat (up to 3 times)
-    for _ in range(4):
-        with capture_output() as log:
-            res = model.fitTo(data, *opts)
-        hit = [p for p in params
-               if min(p.getVal() - p.getMin(), p.getMax() - p.getVal()) < 1e-3 * (p.getMax() - p.getMin())]
+    # A shape parameter that ends at its limit: re-centre its range and fit again (at most
+    # MAX_RECENTRE times). The at-limit check below is made on the result of the last fit, so a
+    # parameter that still ends at a limit after the last attempt is reported as such.
+    with capture_output() as log:
+        res = model.fitTo(data, *opts)
+    for _ in range(MAX_RECENTRE):
+        hit = [p for p in params if at_limit_of(p)]
         if not hit:
             break
         for p in hit:
             p.setRange(p.getVal() - QRANGE, p.getVal() + QRANGE)
+        with capture_output() as log:
+            res = model.fitTo(data, *opts)
     nwarn, nerr = count_messages(log["text"])
 
     # expected events per bin and the goodness of fit
@@ -290,11 +300,7 @@ def fit_function(ROOT, name, hist, tag, strategy=1):
     ndf = len(n) - nfloat
     pvalue = ROOT.TMath.Prob(chi2, ndf) if (ndf > 0 and math.isfinite(chi2)) else 0.0
 
-    at_limit = []
-    for p in params:
-        span = p.getMax() - p.getMin()
-        if p.getVal() - p.getMin() < 1e-3 * span or p.getMax() - p.getVal() < 1e-3 * span:
-            at_limit.append(p.GetName())
+    at_limit = [p.GetName() for p in params + [norm] if at_limit_of(p)]
 
     nset = ROOT.RooArgSet(x)
     xs = np.linspace(xmin, xmax, 400)
@@ -354,30 +360,26 @@ def ftest(fit_lo, fit_hi, nbins):
     return float(1.0 - ROOT.Math.fdistribution_cdf(F, dp, ndf_hi))
 
 
-def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05):
+def select_functions(fits, nbins, pvalue_threshold=0.05):
     """Decide which fits enter the RooMultiPdf.
 
-    A function passes if (i) fit status 0, full covariance matrix (covQual 3) and no parameter
-    at its limit, (ii) goodness-of-fit p-value > pvalue_threshold, and (iii) within its family,
-    its order is not above the order chosen by the F-test: the lowest order (with a good fit
-    quality) for which adding one more parameter does not improve the fit significantly
-    (F-test p-value > ftest_threshold). Returns {name: reason-or-'pass'}.
-    """
+    A fit is acceptable if (i) fit status 0, full covariance matrix (covQual 3) and no parameter
+    at its limit, and (ii) goodness-of-fit p-value > pvalue_threshold. In every family, the
+    acceptable function with the fewest parameters is selected ('pass'); acceptable functions
+    with more parameters in the same family are not used. The default function of the
+    RooMultiPdf (chosen by the caller) is the selected one with the highest p-value.
+
+    For information, the Fisher F-test p-value of each function against the next order of its
+    family is stored as fit['ftest_next'] (not used in the selection).
+    Returns {name: 'pass' or the reason why the function is not used}."""
     verdict = {}
     for fam in {f["family"] for f in fits}:
         ff = sorted((f for f in fits if f["family"] == fam), key=lambda f: f["npar"])
-        chosen = None
         for i, f in enumerate(ff):
-            if not fit_quality_ok(f):
-                continue
             nxt = next((g for g in ff[i + 1:] if fit_quality_ok(g)), None)
-            p = ftest(f, nxt, nbins) if nxt else None
-            f["ftest_next"] = p
-            if nxt is None or p is None or p > ftest_threshold:
-                chosen = f["npar"]
-                break
+            f["ftest_next"] = ftest(f, nxt, nbins) if (nxt and fit_quality_ok(f)) else None
+        selected = None
         for f in ff:
-            f["ftest_order"] = chosen
             if not fit_quality_ok(f):
                 why = []
                 if f["status"] != 0:
@@ -389,8 +391,9 @@ def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05):
                 verdict[f["name"]] = "fail: " + ", ".join(why)
             elif f["pvalue"] <= pvalue_threshold:
                 verdict[f["name"]] = f"fail: p-value {f['pvalue']:.3g}"
-            elif chosen is not None and f["npar"] > chosen:
-                verdict[f["name"]] = f"fail: F-test prefers {fam}{chosen}"
-            else:
+            elif selected is None:
+                selected = f["name"]
                 verdict[f["name"]] = "pass"
+            else:
+                verdict[f["name"]] = f"not used: {selected} has fewer parameters"
     return verdict

@@ -8,9 +8,15 @@ yield inside the fit range. The templates are weighted histograms; by default th
 SumW2-corrected uncertainties (--weights sumw2). --weights counts fits the underlying MC counts
 and scales the yield back instead.
 
-Mass points too close to the lower edge of the fit range are dropped: a mass M is used only
-if XMIN <= M - --min-distance (default 10 GeV); e.g. with the default distance, M = 200 GeV
-is dropped when XMIN > 190 GeV.
+A fit is *failed* if it has status != 0, a covariance matrix that is not full and accurate
+(covQual != 3), or a floating parameter at its limit (after the fixing rules of
+dijetfit/signal.py). Failed fits are kept in the outputs (flag "usable": false) but are not used
+for the signal parametrisation. The goodness of fit (p-value of the Poisson likelihood-ratio
+chi2 on the equivalent MC counts) is reported as a quality figure; it does not reject fits.
+
+Mass points outside the fit range or too close to its edges are dropped: a mass M is used only
+if XMIN + D <= M <= XMAX - D, with D = --min-distance (default 10 GeV); e.g. with the default
+distance, M = 200 GeV is dropped when XMIN > 190 GeV.
 
 Outputs (in --outdir):
   signal_fits.json    fit results per category and mass
@@ -48,7 +54,8 @@ def main():
     ap.add_argument("-o", "--outdir", default="output/signal")
     ap.add_argument("--categories", nargs="*")
     ap.add_argument("--min-distance", type=float, default=10.0,
-                    help="drop masses M with M - XMIN < this value [GeV] (default: 10)")
+                    help="drop masses M closer than this to either edge of the fit range, or "
+                         "outside it [GeV] (default: 10)")
     ap.add_argument("--weights", choices=S.WEIGHT_MODES, default="sumw2",
                     help="treatment of the weighted templates: fit the weighted template with "
                          "SumW2Error (sumw2, default), fit the MC counts and scale the yield "
@@ -79,11 +86,13 @@ def main():
             sys.exit(f"ERROR: no category {c} in {args.input}")
         rebin = bkg["categories"][c]["rebin"]
         masses = signal_masses(tdir)
-        used = [m for m in masses if m - xmin >= args.min_distance]
+        used = [m for m in masses if xmin + args.min_distance <= m <= xmax - args.min_distance]
         dropped = [m for m in masses if m not in used]
         if dropped:
-            print(f"{c}: dropping masses {dropped} (closer than {args.min_distance:g} GeV to "
-                  f"xmin = {xmin:g})")
+            print(f"{c}: dropping masses {dropped} (outside [{xmin:g} + {args.min_distance:g}, "
+                  f"{xmax:g} - {args.min_distance:g}] GeV)")
+        if len(used) < 2:
+            sys.exit(f"ERROR: {c}: fewer than two signal masses inside the fit range")
         payload["categories"][c] = dict(rebin=rebin, masses=used, dropped=dropped, fits={})
         md += [f"## {c}\n", f"rebin {rebin}; dropped masses: {dropped or 'none'}\n",
                "| M | status | covQual | chi2/ndf | p | warn/err | at limit | mean | sigma | "
@@ -97,7 +106,7 @@ def main():
             P = fit["params"]
             labels = [f"{label[c]}, M = {m} GeV",
                       f"status {fit['status']}, covQual {fit['cov_qual']}",
-                      f"#chi^{{2}}/ndf = {fit['chi2']:.1f}/{fit['ndf']}",
+                      f"#chi^{{2}}/ndf = {fit['chi2']:.1f}/{fit['ndf']}, p = {fit['pvalue']:.2g}",
                       f"RooFit warnings/errors: {fit['n_warnings']}/{fit['n_errors']}"]
             labels += [f"{k} = {P[k]['value']:.4g} #pm {P[k]['error']:.2g}" for k in S.ALL_PARAMS]
             fit_plot(ROOT, str(outdir / "plots" / f"sig_{c}_M{m}"), args.formats, h,
@@ -105,18 +114,20 @@ def main():
                      fit_label="Crystal Ball fit")
             payload["categories"][c]["fits"][str(m)] = {
                 k: v for k, v in fit.items() if not k.startswith("_") and k not in ("expected", "curve")}
+            payload["categories"][c]["fits"][str(m)]["usable"] = ok
             md.append(f"| {m} | {fit['status']} | {fit['cov_qual']} | {fit['chi2']:.1f}/{fit['ndf']} | "
                       f"{fit['pvalue']:.3g} | {fit['n_warnings']}/{fit['n_errors']} | "
                       f"{','.join(fit['params_at_limit']) or '-'} | "
                       + " | ".join(f"{P[k]['value']:.4g}" for k in S.ALL_PARAMS) + " |")
-            flag = "" if ok else "   <-- CHECK"
+            flag = "" if ok else "   <-- FAILED: not used for the parametrisation"
             print(f"{c} M{m}: status {fit['status']} covQual {fit['cov_qual']} "
                   f"chi2/ndf {fit['chi2']:.1f}/{fit['ndf']} warn/err {fit['n_warnings']}/"
                   f"{fit['n_errors']} at-limit {fit['params_at_limit'] or '-'}{flag}", flush=True)
         md.append("")
     write_json(outdir / "signal_fits.json", payload)
     (outdir / "signal_summary.md").write_text("\n".join(md) + "\n")
-    print(f"\n{nbad} fit(s) with status != 0, covQual != 3 or a parameter at its limit")
+    print(f"\n{nbad} failed fit(s) (status != 0, covQual != 3 or a parameter at its limit): "
+          "not used for the parametrisation")
     print(f"Written {outdir / 'signal_fits.json'}, {outdir / 'signal_summary.md'}")
 
 

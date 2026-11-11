@@ -17,6 +17,13 @@ splines, non-zero for polynomial fits) is reported.
 
 RooMultiPdf is a class of CMS Combine; the Combine library must be loadable. With
 --no-multipdf the RooMultiPdf is not written (all other objects are).
+
+Categories with bins wider than the original 1 GeV (rebinned by fit_background.py) are refused:
+for such bins the fits integrate the pdfs over each bin, while Combine evaluates them at the bin
+centres, which for these sample sizes is biased by many standard deviations.
+
+The mass variable MH covers the mass range common to all categories (no extrapolation of any
+category's signal model).
 """
 import argparse
 import sys
@@ -66,9 +73,30 @@ def main():
         sys.exit("ERROR: the background and signal files have different categories")
     tfile = ROOT.TFile.Open(args.input)
 
-    all_masses = sorted({m for c in cats for m in sig["categories"][c]["masses"]})
-    mh = ROOT.RooRealVar(MASS_VAR, "m_{Z'} [GeV]", 0.5 * (all_masses[0] + all_masses[-1]),
-                         all_masses[0], all_masses[-1])
+    wide = {}
+    for c in cats:
+        e = bkg["categories"][c]["bin_edges"]
+        lo, hi = np.array(e[:-1]), np.array(e[1:])
+        if B.needs_bin_integration(lo, hi):
+            wide[c] = bkg["categories"][c]["binning"]
+    if wide:
+        sys.exit("ERROR: categories with bins wider than 1 GeV: "
+                 + "; ".join(f"{c} ({b})" for c, b in wide.items())
+                 + ". The background and signal fits integrated the pdfs over these bins, but the "
+                 "RooWorkspace written by this script can only be used with the bin-centre "
+                 "evaluation that Combine applies to binned data, which for such bins is biased by "
+                 "many standard deviations. Only 1 GeV bins are supported for the workspace.")
+
+    # MH: the mass range covered by every category (no extrapolation of any signal model)
+    lo_m = max(min(sig["categories"][c]["masses"]) for c in cats)
+    hi_m = min(max(sig["categories"][c]["masses"]) for c in cats)
+    if hi_m <= lo_m:
+        sys.exit(f"ERROR: the categories have no common signal mass range ({lo_m} - {hi_m})")
+    if any(sig["categories"][c]["masses"] != sig["categories"][cats[0]]["masses"] for c in cats):
+        print(f"WARNING: the categories have different signal mass points; MH is limited to the "
+              f"common range [{lo_m}, {hi_m}] GeV", file=sys.stderr)
+    all_masses = [lo_m, hi_m]
+    mh = ROOT.RooRealVar(MASS_VAR, "m_{Z'} [GeV]", 0.5 * (lo_m + hi_m), lo_m, hi_m)
     # the mass hypothesis is a fixed parameter: Combine sets it with -m; if it were floating,
     # Combine would fit it as a free parameter
     mh.setConstant(True)
@@ -181,6 +209,8 @@ def main():
             name = f"{SIGNAL_PROCESS}_{c}_norm" if k == "norm" else f"{SIGNAL_PROCESS}_{c}_{k}"
             lo_, hi_ = models[k]["clamp"]
             for m, fitted in zip(models[k]["points"]["masses"], models[k]["points"]["values"]):
+                if not mh2.getMin() <= m <= mh2.getMax():
+                    continue  # outside the common mass range
                 mh2.setVal(m)
                 got = w2.function(name).getVal()
                 want = interp.evaluate(models[k], m)
@@ -197,8 +227,8 @@ def main():
         for func in bkg["categories"][c]["passing"]:
             pdf = w2.pdf(f"bkg_{c}_{func}")
             fr = bkg["categories"][c]["fits"][func]
-            nu = B.expected_counts(ROOT, x2, pdf, fr["norm"]["value"], lo, hi,
-                                   B.needs_bin_integration(lo, hi))
+            # bin-centre evaluation, as in Combine (wide bins are refused above)
+            nu = B.expected_counts(ROOT, x2, pdf, fr["norm"]["value"], lo, hi, False)
             chi2 = B.baker_cousins(n, nu)
             worst_chi2 = max(worst_chi2, abs(chi2 - fr["chi2"]))
     print(f"  max relative difference, workspace vs parametrisation (signal): {worst_param:.2e}")
