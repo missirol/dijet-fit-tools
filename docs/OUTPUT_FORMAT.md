@@ -64,7 +64,7 @@ Notes:
   give the highest order. The default is the family maximum with the largest p-value; up to 4
   alternates are the other acceptable functions of order at most their family's maximum,
   ranked by p-value. `pdfindex_CAT` index 0 is the default, then the alternates in this order.
-* **Normalisation of the background pdfs**: each pdf carries its own integrator setting,
+* **Normalisation of the pdfs** (background and signal): each pdf carries its own integrator setting,
   `RooBinIntegrator` with one point per bin, i.e. the pdf is normalised by the sum of its values
   at the bin centres times the bin width, not by its integral. Combine (like RooFit for binned
   data) predicts N × pdf(bin centre) × width per bin, but uses N as the total of the extended
@@ -72,7 +72,9 @@ Notes:
   binned Poisson likelihood of the bin-centre predictions. With the integral as normalisation
   they differ by O(10⁻⁵) (midpoint rule), which for ~2×10⁷ events per category pulls the
   background parameters by O(1σ) and the fitted signal strength in Combine by up to ~1σ (also
-  for Combine's own toys). The background fits of step 2 use the same normalisation.
+  for Combine's own toys). The signal pdf (RooCrystalBall, analytical integral switched off with
+  `forceNumInt`) is normalised in the same way: its mismatch of only ~10⁻⁶ biased r by 0.2-0.3σ
+  at 200 GeV. The background and signal fits (steps 2, 3) use the same normalisation.
 * **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in
   `mjj_CAT`). Combine evaluates the pdfs at the bin centres; for wider bins (a category rebinned
   by the fit-range scan) the fits integrate the pdfs over each bin instead, so the fitted

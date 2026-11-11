@@ -18,7 +18,7 @@ splines, non-zero for polynomial fits) is reported.
 RooMultiPdf is a class of CMS Combine; the Combine library must be loadable. With
 --no-multipdf the RooMultiPdf is not written (all other objects are).
 
-The background pdfs are normalised by their sum over the bin centres (RooBinIntegrator, stored
+The background and signal pdfs are normalised by their sum over the bin centres (RooBinIntegrator, stored
 with each pdf; see dijetfit/background.make_pdf), as in the fits: Combine predicts N x pdf(bin
 centre) x bin width per bin, and these predictions then add up exactly to the yield N.
 
@@ -140,6 +140,7 @@ def main():
                 fv[k] = ROOT.RooFormulaVar(name, f"{k}(MH), {c}", expr, ROOT.RooArgList(mh))
                 keep.append(fv[k])
             spdf = ROOT.RooCrystalBall(sp, f"Z'->qq signal, {c}", x, *[fv[k] for k in CB_PARAMS])
+            B.set_bin_sum_normalisation(spdf, nbins)  # as the background and the signal fits
             wimport(w, spdf, ROOT)
             wimport(w, fv["norm"], ROOT)
             keep.append(spdf)

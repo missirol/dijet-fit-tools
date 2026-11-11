@@ -80,12 +80,15 @@ next order is taken while it is significantly better (F-test p-value < 0.05,
 * up to 4 alternates (`--max-alternates`): the other acceptable functions, of order at most
   their family's highest order, ranked by p-value.
 
-With 1 GeV bins the background pdfs are evaluated at the bin centres and normalised by their
-sum over the bin centres (not by their integral), in the fits and in the workspace: the
-expected counts per bin then add up exactly to the yield, as the extended likelihood of RooFit
-and Combine assumes. With the integral as normalisation they differ by O(10⁻⁵); with ~2×10⁷
-events per category this pulled the background parameters by O(1σ) and the signal strength in
-Combine by up to ~1σ.
+With 1 GeV bins the background and signal pdfs are evaluated at the bin centres and normalised
+by their sum over the bin centres (not by their integral), in the fits and in the workspace:
+the expected counts per bin then add up exactly to the yield, as the extended likelihood of
+RooFit and Combine assumes. With the integral as normalisation they differ by O(10⁻⁵)
+(background) and O(10⁻⁶) (signal); with ~2×10⁷ background events per category this pulled
+the background parameters by O(1σ) and the signal strength in Combine by up to ~2σ (background)
+and 0.3σ at 200 GeV (signal). The bin-sum normalised pdfs agree with exact bin integrals (the
+model of Combine's RooParametricShapeBinPdf) to ~10⁻⁶ relative, ~10⁻⁴ of the statistical
+uncertainty per bin.
 
 ### Signal fits
 

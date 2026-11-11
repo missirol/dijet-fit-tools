@@ -236,6 +236,34 @@ def test_workspace_content(run, workspace):
     assert checks["max_abs_diff_bkg_chi2"] < 1e-6
 
 
+def test_workspace_pdfs_sum_to_one_over_the_bin_centres(ROOT, run, workspace):
+    """Every pdf in the workspace (signal at several masses, every background function) is
+    normalised by its sum over the bin centres: Combine's per-bin predictions N x pdf(centre) x
+    width then add up exactly to the yield. A mismatch of only ~1e-6 (the signal pdf with its
+    analytical integral) biased r by 0.2-0.3 sigma at the lowest mass with ~1e7 background events."""
+    w = workspace
+    mh = w.var("MH")
+    for c in (cat_name(cat) for cat in syn.CATEGORIES):
+        x = w.var(f"mjj_{c}")
+        ns = ROOT.RooArgSet(x)
+        edges = run["bkg"]["categories"][c]["bin_edges"]
+        centres = [0.5 * (a + b) for a, b in zip(edges[:-1], edges[1:])]
+        width = edges[1] - edges[0]
+
+        def bin_sum(pdf):
+            tot = 0.0
+            for xc in centres:
+                x.setVal(xc)
+                tot += pdf.getVal(ns) * width
+            return tot
+
+        for m in (mh.getMin(), 0.5 * (mh.getMin() + mh.getMax()), mh.getMax()):
+            mh.setVal(m)
+            assert bin_sum(w.pdf(f"ZprimeQQ_{c}")) == pytest.approx(1.0, abs=1e-12), (c, m)
+        for func in run["bkg"]["categories"][c]["passing"]:
+            assert bin_sum(w.pdf(f"bkg_{c}_{func}")) == pytest.approx(1.0, abs=1e-12), (c, func)
+
+
 def test_signal_model_at_a_mass_not_used_in_the_fits(ROOT, run, workspace):
     """The interpolated signal model at M = 350 GeV (not given to the workflow) describes the
     independently generated M = 350 GeV template: shape (goodness of fit) and yield."""

@@ -82,9 +82,11 @@ def main():
     summary = read_json(args.workspace_summary)
     if not summary.get("multipdf"):
         sys.exit("ERROR: the workspace has no RooMultiPdf (written with --no-multipdf)")
-    ws_file = Path(summary["file"])
-    if not ws_file.is_absolute():
-        ws_file = (Path(args.workspace_summary).parent / ws_file).resolve()
+    # build_workspace.py writes the summary next to the workspace (same name, .json); the path
+    # recorded in the summary may be relative to the directory it was run from
+    ws_file = Path(args.workspace_summary).with_suffix(".root").resolve()
+    if not ws_file.exists():
+        ws_file = Path(summary["file"]).resolve()
     if not ws_file.exists():
         sys.exit(f"ERROR: workspace file {ws_file} not found")
     cats = args.categories or list(summary["categories"])

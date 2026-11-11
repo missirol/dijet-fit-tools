@@ -215,14 +215,24 @@ def make_pdf(ROOT, pdf_name, func, arglist, formula, nbins=None):
     is noisy at the O(1) level for these sample sizes).
     The integrator setting is stored with the pdf in the workspace."""
     pdf = ROOT.RooGenericPdf(pdf_name, func, formula, arglist)
-    cfg = pdf.specialIntegratorConfig(True)
     if nbins:
-        cfg.method1D().setLabel("RooBinIntegrator")
-        cfg.getConfigSection("RooBinIntegrator").setRealValue("numBins", int(nbins))
+        set_bin_sum_normalisation(pdf, nbins)
     else:
+        cfg = pdf.specialIntegratorConfig(True)
         cfg.setEpsRel(INTEGRATOR_EPS_REL)
         cfg.setEpsAbs(0.0)
         cfg.method1D().setLabel("RooAdaptiveGaussKronrodIntegrator1D")
+    return pdf
+
+
+def set_bin_sum_normalisation(pdf, nbins):
+    """Normalise `pdf` by the sum of its values at the centres of nbins uniform bins over the
+    range of its observable, times the bin width (RooBinIntegrator; the setting is stored with
+    the pdf). Analytical integrals (e.g. of RooCrystalBall) are switched off for this."""
+    pdf.forceNumInt(True)
+    cfg = pdf.specialIntegratorConfig(True)
+    cfg.method1D().setLabel("RooBinIntegrator")
+    cfg.getConfigSection("RooBinIntegrator").setRealValue("numBins", int(nbins))
     return pdf
 
 

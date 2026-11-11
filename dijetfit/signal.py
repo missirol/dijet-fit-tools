@@ -1,8 +1,9 @@
 """Signal shape fits: double-sided Crystal Ball (RooCrystalBall with a common sigma)."""
 import numpy as np
 
-from .background import (BIN_INTEGRATION_PRECISION, baker_cousins, expected_counts,
-                         hist_arrays, needs_bin_integration)
+from .background import (BIN_INTEGRATION_PRECISION, baker_cousins, bin_sum_nbins,
+                         expected_counts, hist_arrays, needs_bin_integration,
+                         set_bin_sum_normalisation)
 from .common import capture_output, count_messages, message_summary
 
 CB_PARAMS = ["mean", "sigma", "alphaL", "nL", "alphaR", "nR"]
@@ -107,6 +108,9 @@ def fit_signal(ROOT, hist, mass, tag, strategy=2, weights="sumw2"):
     )
     pdf = ROOT.RooCrystalBall(f"cb_{tag}", "", x, p["mean"], p["sigma"], p["alphaL"], p["nL"],
                               p["alphaR"], p["nR"])
+    nbins = bin_sum_nbins(lo, hi)
+    if nbins:  # bins evaluated at their centres: normalise by the bin sum, as the background
+        set_bin_sum_normalisation(pdf, nbins)
     ntot = float(n.sum())
     p["norm"] = ROOT.RooRealVar(f"norm_{tag}", "N_{sig}", ntot, 0.5 * ntot, 1.5 * ntot)
     model = ROOT.RooExtendPdf(f"model_{tag}", "", pdf, p["norm"])
