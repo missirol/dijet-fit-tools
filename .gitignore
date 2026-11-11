@@ -1,0 +1,12 @@
+# ROOT files are never committed (inputs are provided separately; outputs are regenerated)
+*.root
+# workflow outputs
+output/
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+# local environment created by setup/install_env.sh
+/env/
+/.mamba/
+/bin/micromamba
