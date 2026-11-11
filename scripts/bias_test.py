@@ -210,7 +210,10 @@ def summary_plot(ROOT, path, points, masses, mus, fits, formats):
     """bias / sigma vs mass, one graph per (mu, fit), with the +-0.14 band."""
     c = ROOT.TCanvas("c_sum", "", 900, 600)
     c.SetLeftMargin(0.12)
-    frame = c.DrawFrame(min(masses) - 40, -0.6, max(masses) + 40, 0.6,
+    ext = [abs(s["bias_over_sigma"]) + s["bias_over_sigma_err"] for p in points.values()
+           for f, s in p["summary"].items() if f in fits]
+    ymax = max([0.6] + [1.15 * e for e in ext])
+    frame = c.DrawFrame(min(masses) - 40, -ymax, max(masses) + 40, 1.4 * ymax,
                         ";signal mass [GeV];(<r_{fit}> - #mu) / #sigma(r_{fit})")
     frame.GetYaxis().SetTitleOffset(1.3)
     box = ROOT.TBox(min(masses) - 40, -BIAS_CRITERION, max(masses) + 40, BIAS_CRITERION)
