@@ -90,6 +90,10 @@ and 0.3σ at 200 GeV (signal). The bin-sum normalised pdfs agree with exact bin 
 model of Combine's RooParametricShapeBinPdf) to ~10⁻⁶ relative, ~10⁻⁴ of the statistical
 uncertainty per bin.
 
+`demo/bin_normalisation/` is a standalone workflow (artificial data with a known truth) that
+shows how the integral normalisation biases the fits, and compares the bin-sum normalisation
+with exact bin integration (see its README).
+
 ### Signal fits
 
 Double-sided `RooCrystalBall` (common σ). The fit releases the parameters in stages
