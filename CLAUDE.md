@@ -5,7 +5,8 @@
 - **Never commit ROOT files.** Input ROOT files are provided by the user via the prompt only.
 - Do not commit or push without the user's explicit request.
 - ROOT version: 6.36.14 (conda-forge), with CMS Combine 11.1.0 for RooMultiPdf. Run python
-  inside the conda environment (e.g. `micromamba run -p ENV python ...`); see setup/.
+  inside the conda environment (setup/shell.sh, `source setup/activate.sh` or
+  `setup/envrun.sh COMMAND`; these remove a ROOT set up in the calling shell); see setup/.
 - Analysis conventions agreed with the user:
   - Categories are selected by regular expressions given to prepare_inputs.py (no category
     names hard-coded in the scripts; defaults in run_all.sh): currently the 11 slices

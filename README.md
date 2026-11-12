@@ -7,8 +7,23 @@ of the two jets, written to a RooWorkspace (format: [docs/OUTPUT_FORMAT.md](docs
 ## Setup
 
 ROOT 6.36.14 (PyROOT, RooFit), numpy, and CMS Combine 11.1.0 (`RooMultiPdf` in step 5, the
-datacards and statistical tests in steps 6-7). `setup/install_env.sh` creates such an
-environment from conda-forge.
+datacards and statistical tests in steps 6-7). `setup/install_env.sh [PREFIX]` creates such
+an environment from conda-forge (default `./env`, with micromamba in `./bin`). Then work in it
+in one of three ways (all commands in this README assume one of them):
+
+| command | does |
+|---|---|
+| `setup/shell.sh [PREFIX]` | opens a new bash shell (reading your `~/.bashrc`) with the environment active; leave it with `exit` |
+| `source setup/activate.sh [PREFIX]` | activates the environment in the current bash or zsh shell |
+| `setup/envrun.sh COMMAND ...` | runs one command in the environment, e.g. `setup/envrun.sh pytest` |
+
+A non-default environment can also be given with `DIJET_ENV=PREFIX`. All three first remove
+any other ROOT installation set up in the calling shell (e.g. by `thisroot.sh`): `ROOTSYS`,
+`PYTHONPATH`, `PYTHONHOME`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `LD_PRELOAD`,
+`ROOT_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `C_INCLUDE_PATH`, `CLING_STANDARD_PCH`, and ROOT
+`bin` directories in `PATH` (list in `setup/_clean_env.sh`); a line says what was removed.
+Otherwise the environment's Python can load the other ROOT's libraries or bindings, and
+`import ROOT` crashes.
 
 ## Workflow
 
