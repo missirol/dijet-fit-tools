@@ -417,7 +417,8 @@ def acceptable(fit, pvalue_threshold):
     return fit_quality_ok(fit) and fit["pvalue"] > pvalue_threshold
 
 
-def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, max_alternates=4):
+def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, max_alternates=4,
+                     family_max_only=False):
     """Choose the functions of the RooMultiPdf: a default and up to `max_alternates` alternates.
 
     1. Only acceptable fits are used (see `acceptable`; p-value > pvalue_threshold).
@@ -427,6 +428,8 @@ def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, m
        family contributes its acceptable orders from the lowest one up to this highest order.
     3. Default: among the highest orders of the families, the one with the largest p-value.
     4. Alternates: the other contributed functions, ranked by p-value, at most max_alternates.
+       With family_max_only, a family contributes only its highest order (at most one function
+       per family in the RooMultiPdf).
 
     Every fit gets fit['ftest_next'] (F-test p-value against the next order of its family,
     when both fits have a good quality) and fit['ftest_max'] (the highest order of its family).
@@ -472,6 +475,8 @@ def select_functions(fits, nbins, pvalue_threshold=0.05, ftest_threshold=0.05, m
                                           f"F-test beyond {top['name']}")
                 else:
                     verdict[f["name"]] = f"not used: above the F-test maximum ({top['name']})"
+            elif family_max_only and f is not top:
+                verdict[f["name"]] = f"not used: below the family maximum ({top['name']})"
             else:
                 candidates.append(f)
     if not family_max:

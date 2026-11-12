@@ -13,7 +13,9 @@ dijetfit/background.py, select_functions):
     its fit is acceptable: this gives the family's highest order; the family contributes its
     acceptable orders up to that one;
   - default: among the highest orders of the families, the one with the largest p-value;
-  - alternates: the other contributed functions ranked by p-value, at most --max-alternates.
+  - alternates: the other contributed functions ranked by p-value, at most --max-alternates;
+    with --alternates family-max, only the highest order of each family is used (at most one
+    function per family).
 RooFit/Minuit warnings and errors are counted and reported, but do not fail a fit.
 
 The fit range [--xmin, --xmax] is common to all categories and must be given explicitly (the
@@ -112,6 +114,9 @@ def main():
                          "(default: 0.05)")
     ap.add_argument("--max-alternates", type=int, default=4,
                     help="maximum number of alternate functions in the RooMultiPdf (default: 4)")
+    ap.add_argument("--alternates", choices=["orders", "family-max"], default="orders",
+                    help="'orders' (default): every acceptable order up to the family maximum; "
+                         "'family-max': only the highest order of each family")
     ap.add_argument("--scan", action="store_true",
                     help="choose XMIN (and rebinning) automatically, starting from --xmin")
     ap.add_argument("--scan-step", type=float, default=5.0, help="step of the scan [GeV] (default: 5)")
@@ -161,7 +166,7 @@ def main():
     (outdir / "plots").mkdir(parents=True, exist_ok=True)
     pthr = args.pvalue_threshold
     sel = dict(pvalue_threshold=pthr, ftest_threshold=args.ftest_threshold,
-               max_alternates=args.max_alternates)
+               max_alternates=args.max_alternates, family_max_only=args.alternates == "family-max")
 
     def run(xmin, which, factors):
         res = {}
@@ -210,9 +215,12 @@ def main():
     # ---- plots and outputs for the final configuration
     payload = dict(fit_range=[xmin, args.xmax], pvalue_threshold=pthr,
                    ftest_threshold=args.ftest_threshold, max_alternates=args.max_alternates,
+                   alternates=args.alternates,
                    selection="per family, F-tests from the lowest acceptable order give the highest "
                              "order; default: the family maximum with the largest p-value; "
-                             "alternates: the other acceptable orders up to the family maxima, by p-value",
+                             + ("alternates: the other acceptable orders up to the family maxima, by p-value"
+                                if args.alternates == "orders" else
+                                "alternates: the highest orders of the other families, by p-value"),
                    functions=args.functions,
                    function_definitions={f: B.describe(f) for f in args.functions},
                    pdf_normalisation="sum over the bin centres (1 GeV bins); integral, adaptive Gauss-Kronrod "
@@ -223,7 +231,9 @@ def main():
           f"Acceptable fit: status 0, covQual 3, no parameter at limit, p > {pthr:g}. Per family, "
           f"F-tests (threshold {args.ftest_threshold:g}) from the lowest acceptable order give the "
           "highest order; default: the family maximum with the largest p-value; up to "
-          f"{args.max_alternates} alternates ranked by p-value.\n", "## Scan / configuration log\n",
+          f"{args.max_alternates} alternates ranked by p-value"
+          + (" (only the highest order of each family)" if args.alternates == "family-max" else "")
+          + ".\n", "## Scan / configuration log\n",
           "```", *scan_log, "```\n"]
     label = category_labels(cats)
     for c in cats:

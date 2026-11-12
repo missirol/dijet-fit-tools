@@ -80,6 +80,9 @@ next order is taken while it is significantly better (F-test p-value < 0.05,
 * up to 4 alternates (`--max-alternates`): the other acceptable functions, of order at most
   their family's highest order, ranked by p-value.
 
+With `--alternates family-max`, only the highest order of each family is used (at most one
+function per family; studied for the envelope bias, which it does not reduce).
+
 With 1 GeV bins the background and signal pdfs are evaluated at the bin centres and normalised
 by their sum over the bin centres (not by their integral), in the fits and in the workspace:
 the expected counts per bin then add up exactly to the yield, as the extended likelihood of
@@ -124,7 +127,8 @@ python3 scripts/bias_test.py output/datacards/datacards.json -o output/bias \
 
 For every signal mass and injected signal strength μ (× σ = 1 nb), Combine generates binned toys
 from the combined workspace (background: the default function of every category, with the
-parameters of the fit to data; `--generate altK` uses the K-th alternates instead) and fits
+parameters of the fit to data; `--generate altK` uses the K-th alternates instead, `--generate family-NAME`
+the highest order of family NAME in every category) and fits
 them with signal + background, all 11 categories together (r common, background parameters
 uncorrelated):
 

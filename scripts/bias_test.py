@@ -61,13 +61,21 @@ def fmt_mu(mu):
 
 
 def gen_indices(meta, gen):
-    """Index of the generating function per category: 'default', or 'altK' (the K-th alternate
-    of every category, or its default if it has fewer alternates)."""
+    """Index of the generating function per category: 'default', 'altK' (the K-th alternate
+    of every category, or its default if it has fewer alternates), or 'family-NAME' (the
+    highest-order function of family NAME in the envelope of every category, or its default if
+    the family is not in it)."""
     out = {}
     for c, v in meta["categories"].items():
         n = len(v["index_to_function"])
         if gen == "default":
             out[c] = v["default_index"]
+        elif gen.startswith("family-"):
+            fam = gen.split("-", 1)[1]
+            cand = [(int(re.fullmatch(rf"{re.escape(fam)}(\d+)", f).group(1)), int(i))
+                    for i, f in v["index_to_function"].items()
+                    if re.fullmatch(rf"{re.escape(fam)}\d+", f)]
+            out[c] = max(cand)[1] if cand else v["default_index"]
         else:
             k = int(re.fullmatch(r"alt(\d+)", gen).group(1))
             out[c] = k if k < n else v["default_index"]
@@ -267,8 +275,10 @@ def main():
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1,
                     help="Combine processes in parallel (default: number of CPUs)")
     ap.add_argument("--generate", nargs="+", default=["default"],
-                    help="generating background functions: 'default' and/or 'altK' (the K-th "
-                         "alternate of every category, its default if it has fewer)")
+                    help="generating background functions: 'default', 'altK' (the K-th "
+                         "alternate of every category, its default if it has fewer) and/or "
+                         "'family-NAME' (the highest order of family NAME in every category, "
+                         "its default if the family is not in the envelope)")
     ap.add_argument("--fits", nargs="+", choices=["envelope", "fixed"],
                     default=["envelope", "fixed"])
     ap.add_argument("--pull-toys", type=int, default=0,
@@ -280,8 +290,8 @@ def main():
     args = ap.parse_args()
 
     for g in args.generate:
-        if g != "default" and not re.fullmatch(r"alt\d+", g):
-            sys.exit(f"ERROR: unknown generator '{g}' (use 'default' or 'altK')")
+        if g != "default" and not re.fullmatch(r"alt\d+|family-\w+", g):
+            sys.exit(f"ERROR: unknown generator '{g}' (use 'default', 'altK' or 'family-NAME')")
     C.require_tool("combine")
     meta_path = Path(args.datacards)
     meta = read_json(meta_path)

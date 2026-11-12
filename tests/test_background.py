@@ -223,6 +223,23 @@ def test_selection_follows_standard_ftest_sequence():
     assert v["dijet4"] == "pass (alternate 3)"
 
 
+def test_selection_with_only_the_family_maxima():
+    """--alternates family-max: one function per family, its F-test maximum."""
+    nb = 450
+    fits = [_fake("dijet4", 470, p=0.06), _fake("dijet5", 440, p=0.6), _fake("dijet6", 439.8, p=0.6),
+            _fake("moddijet3", 452, p=0.3), _fake("moddijet4", 451.5, p=0.31),
+            _fake("ua24", 470, p=0.08), _fake("ua25", 440, p=0.5)]
+    v, default = B.select_functions(fits, nb, 0.05, 0.05, 4, family_max_only=True)
+    assert default == "dijet5"
+    assert v["ua25"] == "pass (alternate 1)" and v["moddijet3"] == "pass (alternate 2)"
+    assert v["dijet4"] == "not used: below the family maximum (dijet5)"
+    assert v["ua24"] == "not used: below the family maximum (ua25)"
+    assert v["dijet6"] == "not used: above the F-test maximum (dijet5)"
+    # the default selection keeps the lower orders
+    v, _ = B.select_functions(fits, nb, 0.05, 0.05, 4)
+    assert v["dijet4"].startswith("pass (alternate") and v["ua24"].startswith("pass (alternate")
+
+
 def test_selection_caps_alternates_and_handles_no_acceptable_fit():
     nb = 450
     fits = [_fake(f"{fam}3", 450, p=p) for fam, p in (("dijet", 0.9), ("moddijet", 0.5), ("ua2", 0.4))]

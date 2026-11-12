@@ -42,3 +42,20 @@ def test_discrete_profiling_options_are_pairs():
     o = C.DISCRETE_PROFILING_OPTIONS
     assert o[0] == "--cminDefaultMinimizerStrategy"
     assert all(o[i] == "--X-rtd" for i in range(2, len(o), 2))
+
+
+def test_bias_test_generators():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import bias_test as BT
+    meta = dict(categories=dict(
+        a=dict(default_index=0, index_to_function={"0": "dijet6", "1": "ua26", "2": "ua25"}),
+        b=dict(default_index=0, index_to_function={"0": "moddijet5", "1": "dijet5", "2": "ua24"}),
+        c=dict(default_index=0, index_to_function={"0": "dijet5", "1": "moddijet5"})))
+    assert BT.gen_indices(meta, "default") == dict(a=0, b=0, c=0)
+    assert BT.gen_indices(meta, "alt2") == dict(a=2, b=2, c=0)
+    # highest order of the family in each envelope, the default if the family is missing
+    assert BT.gen_indices(meta, "family-ua2") == dict(a=1, b=2, c=0)
+    assert BT.gen_indices(meta, "family-dijet") == dict(a=0, b=1, c=0)
+    assert BT.gen_indices(meta, "family-moddijet") == dict(a=0, b=0, c=1)
