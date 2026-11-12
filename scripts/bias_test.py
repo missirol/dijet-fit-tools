@@ -135,7 +135,7 @@ class Runner:
         toys = d / f"higgsCombine.gen.GenerateOnly.mH{mass}.{seed}.root"
         fit = [*common, "--toysFile", toys.name, "--rMin", rrange[0], "--rMax", rrange[1],
                *C.DISCRETE_PROFILING_OPTIONS]
-        out = dict(seed=seed, ntoys=ntoys, fits={})
+        out = dict(seed=seed, ntoys=ntoys, fits={}, log=log)
         for mode in self.args.fits:
             extra = ["--saveSpecifiedIndex", ",".join(self.idx_names)] if mode == "envelope" else \
                 ["--setParameters", setp, "--freezeParameters", ",".join(self.idx_names)]
@@ -149,9 +149,24 @@ class Runner:
         return out
 
 
+def log_fit_counts(log, mode):
+    """Successful and failed toy fits reported by Combine in the MultiDimFit section of `mode`
+    (the section of the log that starts with the combine command ending in '-n .<mode>').
+    Combine prints 'best fit parameter values' after every successful fit and 'MultiDimFit
+    failed' otherwise; a failed fit writes no row to the limit tree."""
+    text = Path(log).read_text(errors="replace") if Path(log).exists() else ""
+    sections = re.split(r"(?m)^\$ combine ", text)
+    sec = [x for x in sections if x.startswith("-M MultiDimFit") and
+           re.search(rf"-n \.{re.escape(mode)}\s*$", x.splitlines()[0])]
+    body = sec[-1] if sec else ""
+    return dict(ok=body.count("best fit parameter values"), failed=body.count("MultiDimFit failed"),
+                found=bool(sec))
+
+
 def collect(ROOT, job, idx_names):
-    """Per-toy results of one job from the Combine output files."""
-    res = {}
+    """Per-toy results of one job from the Combine output files, and the fit counts reported in
+    its log (res['log_counts'][mode])."""
+    res = {"log_counts": {}}
     for mode, path in job["fits"].items():
         cols = ["iToy", "r", "quantileExpected"] + (idx_names if mode == "envelope" else [])
         a = read_tree(ROOT, path, "limit", cols)
@@ -163,6 +178,8 @@ def collect(ROOT, job, idx_names):
             if mode == "envelope" and len(a[idx_names[0]]):
                 toys[t]["index"] = [int(a[n][i]) for n in idx_names]
         res[mode] = toys
+        if job.get("log"):
+            res["log_counts"][mode] = log_fit_counts(job["log"], mode)
     if job.get("pull_file"):
         # one row per toy, in order (the tree has no toy number)
         a = read_tree(ROOT, job["pull_file"], "tree_fit_sb", ["r", "rLoErr", "rHiErr", "fit_status"])
@@ -321,27 +338,36 @@ def main():
 
     # ---- toys
     tasks = []
+    seed = args.seed - 1  # one seed per job, unique within the run
     for gi, gen in enumerate(args.generate):
         for mi, m in enumerate(masses):
             for ui, mu in enumerate(args.mu):
                 half = R_RANGE_SIGMAS * asimov[m]["sigma"]
                 rrange = (round(mu - half, 4), round(mu + half, 4))
                 njobs = math.ceil(args.ntoys / args.toys_per_job)
+                want_pulls = args.pull_toys if any(abs(mu - p) < 1e-9 for p in pull_mu) else 0
                 for j in range(njobs):
                     n = min(args.toys_per_job, args.ntoys - j * args.toys_per_job)
-                    seed = args.seed + 100000 * gi + 10000 * mi + 1000 * ui + j
-                    pt = args.pull_toys if (j == 0 and any(abs(mu - p) < 1e-9 for p in pull_mu)) else 0
-                    tasks.append((gen, m, mu, j, n, seed, rrange, min(pt, n)))
+                    seed += 1
+                    # the pull fits use the first toys of the first jobs, up to --pull-toys
+                    pt = max(0, min(n, want_pulls - j * args.toys_per_job))
+                    tasks.append((gen, m, mu, j, n, seed, rrange, pt))
     print(f"\n{len(tasks)} Combine jobs ({args.ntoys} toys per point, {len(args.generate)} "
           f"generator(s) x {len(masses)} masses x {len(args.mu)} signal strengths), "
           f"{args.jobs} in parallel", flush=True)
-    results = {}
+    results, failed_jobs = {}, []
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = {ex.submit(runner.job, *t): t for t in tasks}
         for k, fut in enumerate(as_completed(futs), 1):
             t = futs[fut]
-            job = fut.result()
-            results.setdefault(t[:3], []).append((t, collect(ROOT, job, idx_names)))
+            try:  # a failing job is recorded; the others continue
+                job = fut.result()
+                results.setdefault(t[:3], []).append((t, collect(ROOT, job, idx_names)))
+            except Exception as e:  # noqa: BLE001
+                failed_jobs.append(dict(generate=t[0], mass=t[1], mu=t[2], job=t[3], ntoys=t[4],
+                                        seed=t[5], error=str(e)[-2000:]))
+                print(f"  WARNING: job {t[0]} M{t[1]} mu {t[2]:g} #{t[3]} (seed {t[5]}) failed: "
+                      f"{str(e)[-300:]}", flush=True)
             if k % max(1, len(tasks) // 20) == 0 or k == len(tasks):
                 print(f"  {k}/{len(tasks)} jobs done", flush=True)
 
@@ -349,7 +375,7 @@ def main():
     payload = dict(datacards=str(meta_path), masses=masses, mu=args.mu, ntoys=args.ntoys,
                    generate=args.generate, fits=args.fits, bias_criterion=BIAS_CRITERION,
                    r_range_sigmas=R_RANGE_SIGMAS, discrete_profiling_options=C.DISCRETE_PROFILING_OPTIONS,
-                   asimov=asimov, points=[])
+                   categories=runner.cats, asimov=asimov, failed_jobs=failed_jobs, points=[])
     md = ["# Bias test of the signal strength (11 categories combined)\n",
           f"Toys generated by Combine from the combined workspace ({args.ntoys} per point); "
           "bias = (mean r_fit - mu) / std(r_fit) over the toys, uncertainty 1/sqrt(N). "
@@ -358,6 +384,9 @@ def main():
           "| M [GeV] | r (Asimov) | sigma_r |", "|---|---|---|"]
     md += [f"| {m} | {asimov[m]['r']:.4f} | -{asimov[m]['err_lo']:.4f} / +{asimov[m]['err_hi']:.4f} |"
            for m in masses]
+    if failed_jobs:
+        md += ["", f"**{len(failed_jobs)} Combine job(s) failed** (their toys count as failed; "
+               "details in bias_results.json, `failed_jobs`)."]
     for gen in args.generate:
         gidx = gen_indices(meta, gen)
         pts = {}
@@ -372,20 +401,39 @@ def main():
             half = R_RANGE_SIGMAS * asimov[m]["sigma"]
             rrange = (round(mu - half, 4), round(mu + half, 4))
             point = dict(generate=gen, mass=m, mu=mu, r_range=list(rrange), toys={}, summary={})
+            lost = sum(f["ntoys"] for f in failed_jobs
+                       if (f["generate"], f["mass"], f["mu"]) == (gen, m, mu))
             for mode in args.fits:
-                vals, same, chosen = [], [], {}
+                vals, same, chosen, indices = [], [], {}, []
+                rep_ok = rep_failed = 0
                 for t, res in jobs:
+                    lc = res.get("log_counts", {}).get(mode, {})
+                    rep_ok += lc.get("ok", 0)
+                    rep_failed += lc.get("failed", 0)
                     for toy, rec in res.get(mode, {}).items():
                         vals.append(rec["r"])
                         if "index" in rec:
+                            indices.append(rec["index"])
                             same.append(np.mean([i == gidx[c] for i, c in zip(rec["index"], runner.cats)]))
                             for i, c in zip(rec["index"], runner.cats):
                                 f = meta["categories"][c]["index_to_function"][str(i)]
                                 chosen.setdefault(c, {}).setdefault(f, 0)
                                 chosen[c][f] += 1
                 point["toys"][mode] = vals
+                if indices:
+                    point["toys"][f"{mode}_index"] = indices  # per toy, in the order of 'categories'
                 s = summarise(vals, mu, rrange)
+                # failed = no result: fits reported failed by Combine, toys of failed jobs, and any
+                # other missing result (should be none; reported as unexplained)
                 s["n_failed"] = args.ntoys - len(vals)
+                s["n_failed_fit"] = rep_failed
+                s["n_lost_in_failed_jobs"] = lost
+                s["n_failed_unexplained"] = s["n_failed"] - rep_failed - lost
+                s["n_reported_ok"] = rep_ok
+                if s["n_failed_unexplained"] or rep_ok != len(vals):
+                    print(f"  WARNING: {gen} M{m} mu {mu:g} {mode}: {len(vals)} results, Combine "
+                          f"reported {rep_ok} successful and {rep_failed} failed fits, {lost} toys "
+                          "lost in failed jobs", flush=True)
                 if same:
                     s["fraction_same_function"] = float(np.mean(same))
                     s["chosen_functions"] = chosen

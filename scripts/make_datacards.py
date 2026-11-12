@@ -13,8 +13,10 @@ uncorrelated. No systematic uncertainties are included.
 
 The cards are then combined with combineCards.py (the category names are kept as bin names)
 and converted with text2workspace.py into the workspace used by the statistical tests. The
-combined workspace is checked: every category must be present with its index, and the expected
-yields must equal r x ZprimeQQ_CAT_norm(MH) (signal) and bkg_CAT_norm (background).
+combined workspace is checked: every category must be present with its index, the expected
+yields must equal r x ZprimeQQ_CAT_norm(MH) (signal) and bkg_CAT_norm (background), and the
+normalised shapes (every background function, and the signal at every signal mass) must equal
+those of the source workspace at every bin centre.
 
 Outputs (in --outdir):
   datacard_<CAT>.txt        one datacard per category
@@ -29,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dijetfit import combine as C  # noqa: E402
-from dijetfit.common import SIGNAL_PROCESS, read_json, setup_root, write_json  # noqa: E402
+from dijetfit.common import DATA_NAME, SIGNAL_PROCESS, read_json, setup_root, write_json  # noqa: E402
 
 
 def check_combined(ROOT, path, summary, cats, source):
@@ -65,7 +67,51 @@ def check_combined(ROOT, path, summary, cats, source):
         want = src.var(f"bkg_{c}_norm").getVal()
         if abs(bkg.getVal() - want) > 1e-9 * want:
             problems.append(f"{c}: background yield {bkg.getVal():g} != {want:g}")
+        problems += check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses)
     r.setVal(1.0)
+    return problems
+
+
+def check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses, tol=1e-9):
+    """Normalised pdf values at every bin centre: each background function and the signal (at
+    every signal mass) of the combined workspace against the source workspace."""
+    info = summary["categories"][c]
+    d = src.data(f"{DATA_NAME}_{c}")
+    if not d:
+        return [f"{c}: no {DATA_NAME}_{c} in the source workspace"]
+    name = d.get().first().GetName()
+    x_src, x_cmb = src.var(name), w.var(name)
+    if not x_src or not x_cmb:
+        return [f"{c}: observable {name} missing"]
+    centres = [d.get(i).first().getVal() for i in range(d.numEntries())]
+    pairs = [(f, w.pdf(f), src.pdf(f)) for f in info["background"]["functions"].values()]
+    sig = w.pdf(f"shapeSig_{SIGNAL_PROCESS}_{c}") or w.pdf(info["signal"]["pdf"])
+    problems = []
+
+    def compare(label, p_cmb, p_src):
+        worst = 0.0
+        ns_c, ns_s = ROOT.RooArgSet(x_cmb), ROOT.RooArgSet(x_src)
+        for xc in centres:
+            x_cmb.setVal(xc)
+            x_src.setVal(xc)
+            a, b = p_cmb.getVal(ns_c), p_src.getVal(ns_s)
+            worst = max(worst, abs(a - b) / max(abs(b), 1e-300))
+        if worst > tol:
+            problems.append(f"{c}: {label} differs from the source workspace (max rel. diff {worst:.2g})")
+
+    for f, p_cmb, p_src in pairs:
+        if not p_cmb or not p_src:
+            problems.append(f"{c}: background function {f} missing")
+        else:
+            compare(f"background function {f}", p_cmb, p_src)
+    p_src = src.pdf(info["signal"]["pdf"])
+    if not sig or not p_src:
+        problems.append(f"{c}: signal pdf missing")
+    else:
+        for m in masses:
+            mh.setVal(m)
+            mh_src.setVal(m)
+            compare(f"signal pdf at MH = {m}", sig, p_src)
     return problems
 
 
@@ -136,7 +182,8 @@ def main():
         print(f"Combined {len(cats)} categories: {outdir / 'datacard_combined.txt'}, "
               f"{outdir / 'datacard_combined.root'}")
         print("Checks on the combined workspace: all categories and indices present; expected "
-              "yields = r x signal norm(MH) and the background norm, at every signal mass")
+              "yields = r x signal norm(MH) and the background norm, at every signal mass; "
+              "normalised background and signal shapes equal to the source at every bin centre")
     write_json(outdir / "datacards.json", meta)
     print(f"Written {outdir / 'datacards.json'}")
 

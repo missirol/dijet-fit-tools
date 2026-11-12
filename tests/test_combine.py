@@ -59,3 +59,20 @@ def test_bias_test_generators():
     assert BT.gen_indices(meta, "family-ua2") == dict(a=1, b=2, c=0)
     assert BT.gen_indices(meta, "family-dijet") == dict(a=0, b=1, c=0)
     assert BT.gen_indices(meta, "family-moddijet") == dict(a=0, b=0, c=1)
+
+
+def test_bias_test_log_fit_counts(tmp_path):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import bias_test as BT
+    log = tmp_path / "combine.log"
+    log.write_text("$ combine -M GenerateOnly ws.root -t 3 -n .gen\nGenerate toy 1/3\n"
+                   "$ combine -M MultiDimFit ws.root -t 3 --algo none -n .envelope\n"
+                   + " --- MultiDimFit ---\nbest fit parameter values: \n   r : +1.0\n" * 2
+                   + "MultiDimFit failed\n"
+                   "$ combine -M MultiDimFit ws.root -t 3 --algo none -n .fixed\n"
+                   + " --- MultiDimFit ---\nbest fit parameter values: \n   r : +1.0\n" * 3)
+    assert BT.log_fit_counts(log, "envelope") == dict(ok=2, failed=1, found=True)
+    assert BT.log_fit_counts(log, "fixed") == dict(ok=3, failed=0, found=True)
+    assert BT.log_fit_counts(log, "pull")["found"] is False

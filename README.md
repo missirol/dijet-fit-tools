@@ -28,7 +28,7 @@ separately (see [Bias test](#bias-test-step-7)).
 | 3 | `scripts/fit_signal.py` | fits each signal template with a double-sided Crystal Ball, in the same range/binning | `signal_fits.json`, `signal_summary.md`, plots |
 | 4 | `scripts/parametrize_signal.py` | interpolates the signal parameters and yield in the mass (spline by default, `--default-model polN` / `--model PARAM=polN` for polynomials) | `signal_parametrisation.json`, plots |
 | 5 | `scripts/build_workspace.py` | writes the workspace and checks that it reproduces the fit results | `workspace/dijet_workspace.root` (+ `.json` summary) |
-| 6 | `scripts/make_datacards.py` | one Combine datacard per category (everything taken from the workspace), their combination, and `text2workspace.py`; checks the expected yields of the combined workspace | `datacards/datacard_CAT.txt`, `datacard_combined.{txt,root}`, `datacards.json` |
+| 6 | `scripts/make_datacards.py` | one Combine datacard per category (everything taken from the workspace), their combination, and `text2workspace.py`; checks the expected yields and the normalised shapes of the combined workspace against the source workspace | `datacards/datacard_CAT.txt`, `datacard_combined.{txt,root}`, `datacards.json` |
 | 7 | `scripts/bias_test.py` | bias test of the signal strength with Combine toys, all categories combined | `bias/bias_results.json`, `bias_summary.md`, plots |
 
 Every fit produces a plot with the distribution, the fit and a pull sub-pad,
@@ -81,7 +81,8 @@ next order is taken while it is significantly better (F-test p-value < 0.05,
   their family's highest order, ranked by p-value.
 
 With `--alternates family-max`, only the highest order of each family is used (at most one
-function per family; studied for the envelope bias, which it does not reduce).
+function per family). It was tried against the envelope bias of the signal strength and did
+not reduce it (bias test of November 2026, results in the discussion of PR #2).
 
 With 1 GeV bins the background and signal pdfs are evaluated at the bin centres and normalised
 by their sum over the bin centres (not by their integral), in the fits and in the workspace:
@@ -137,8 +138,18 @@ uncorrelated):
 
 The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N); a common criterion is
 |bias| < 0.14. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
-`--robustFit`). With `--pull-toys K`, K toys per point are also fitted with uncertainties
-(`--robustFit 1`, about a minute per toy) and the pulls (r_fit − μ)/σ_r are reported.
+`--robustFit`). With `--pull-toys K`, the first K toys of each point (taken from as many jobs
+as needed) are also fitted with uncertainties (`--robustFit 1`, about a minute per toy) and the
+pulls (r_fit − μ)/σ_r are reported.
+
+Every job (`--toys-per-job` toys) has its own random seed. A toy fit counts as successful only if
+it has a result in Combine's output tree, and the Combine log of every job is checked: the
+numbers of successful (`n_reported_ok`) and failed fits (`n_failed_fit`) are stored per point,
+together with toys lost in Combine jobs that failed (`n_lost_in_failed_jobs`; the run continues
+and the failed jobs are listed in `failed_jobs`) and any other missing result
+(`n_failed_unexplained`, which should be 0). `bias_results.json` also stores, per toy, r and,
+for the envelope fits, the selected function index of every category (`envelope_index`, in the
+order of `categories`).
 
 ## Tests
 
@@ -172,7 +183,10 @@ default 150-600 GeV, as in `run_all.sh`).
   to its own Asimov data set (generating background function) returns the injected signal
   strength within 2% of its uncertainty, for no signal and 3σ (regression test for the
   normalisation of the background pdfs: with the old normalisation it was off by 1.2σ); `-m`
-  sets the mass; `bias_test.py` runs end to end on a minimal configuration.
+  sets the mass; the shape check of `make_datacards.py` catches a modified parameter;
+  `bias_test.py` runs end to end (two generators, several jobs: every fit counted in the
+  Combine log, unique seeds, pull toys from several jobs, fixed-function fits close) and keeps
+  going when a Combine job fails.
 * **Scan test** (also in `tests/test_closure.py`): a background with a turn-on just above the
   configured lower edge; `fit_background.py --scan` must raise the lower edge past it.
 

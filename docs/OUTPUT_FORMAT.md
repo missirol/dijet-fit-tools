@@ -64,6 +64,9 @@ Notes:
   give the highest order. The default is the family maximum with the largest p-value; up to 4
   alternates are the other acceptable functions of order at most their family's maximum,
   ranked by p-value. `pdfindex_CAT` index 0 is the default, then the alternates in this order.
+  With `fit_background.py --alternates family-max`, only the highest order of each family is
+  used (at most one function per family); `background_fits.json` records the choice
+  (`alternates`: `orders` or `family-max`).
 * **Normalisation of the pdfs** (background and signal): each pdf carries its own integrator setting,
   `RooBinIntegrator` with one point per bin, i.e. the pdf is normalised by the sum of its values
   at the bin centres times the bin width, not by its integral. Combine (like RooFit for binned
@@ -71,10 +74,13 @@ Notes:
   likelihood; with the bin-sum normalisation the two agree exactly, and the likelihood is the
   binned Poisson likelihood of the bin-centre predictions. With the integral as normalisation
   they differ by O(10⁻⁵) (midpoint rule), which for ~2×10⁷ events per category pulls the
-  background parameters by O(1σ) and the fitted signal strength in Combine by up to ~1σ (also
+  background parameters by O(1σ) and the fitted signal strength in Combine by up to ~2σ (also
   for Combine's own toys). The signal pdf (RooCrystalBall, analytical integral switched off with
   `forceNumInt`) is normalised in the same way: its mismatch of only ~10⁻⁶ biased r by 0.2-0.3σ
   at 200 GeV. The background and signal fits (steps 2, 3) use the same normalisation.
+  The `RooBinIntegrator` places its points at the centres of `numBins` equal intervals of the
+  range being normalised; this is the set of bin centres only for the full fit range. A pdf
+  normalised over a sub-range (e.g. a plot or blinding range) would be evaluated at other points.
 * **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in
   `mjj_CAT`). Combine evaluates the pdfs at the bin centres; for wider bins (a category rebinned
   by the fit-range scan) the fits integrate the pdfs over each bin instead, so the fitted
@@ -113,7 +119,9 @@ The mass hypothesis is set with `-m`, e.g. `text2workspace.py card.txt -m 300`.
 `scripts/make_datacards.py` (step 6 of `run_all.sh`) writes these cards for all categories
 (`datacards/datacard_CAT.txt`, with the workspace path relative to the card), combines them with
 `combineCards.py` keeping the category names as bin names (`datacard_combined.txt`), and runs
-`text2workspace.py` (`datacard_combined.root`). The signal process has the same name in all
+`text2workspace.py` (`datacard_combined.root`). The combined workspace is checked against the source
+workspace: expected yields (signal at every mass, background) and normalised shapes (every
+background function, and the signal at every mass) at every bin centre. The signal process has the same name in all
 categories, so the signal strength `r` is common to all of them; the background parameters,
 yields and indices are separate per category (uncorrelated). There are no systematic
 uncertainties. `datacards.json` lists the names used by the later steps (categories, index

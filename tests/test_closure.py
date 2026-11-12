@@ -396,26 +396,96 @@ def test_combine_mass_is_set_by_m(run):
 
 
 def test_bias_test_script(run):
-    """bias_test.py runs end to end on a minimal configuration: every toy is fitted, the
-    Asimov uncertainty and the pull fit are found, and the outputs and plots are written."""
+    """bias_test.py end to end on a small configuration (10 toys in 3 jobs, two generators):
+    every toy is fitted and counted in the Combine log, the seeds are unique, the pull toys are
+    taken from several jobs, the per-toy function indices are saved, and the fixed-function fits
+    close (mean r compatible with the injected mu)."""
     masses = expected_masses(run["fit_range"])
+    meta = json.loads((run["out"] / "datacards" / "datacards.json").read_text())
+    # a family that is an alternate (not the default) in at least one category
+    fams = {re.sub(r"\d+$", "", f) for v in meta["categories"].values()
+            for i, f in v["index_to_function"].items() if int(i) != v["default_index"]}
+    gen2 = f"family-{sorted(fams)[0]}"
     out = run["base"] / "bias"
+    mu = 1.0
     p = subprocess.run([sys.executable, str(REPO / "scripts" / "bias_test.py"),
                         run["out"] / "datacards" / "datacards.json", "-o", out, "--masses",
-                        str(masses[-1]), "--mu", "1", "--ntoys", "5", "--toys-per-job", "5",
-                        "--pull-toys", "2", "--jobs", "2", "--formats", "png"],
+                        str(masses[-1]), "--mu", f"{mu:g}", "--ntoys", "10", "--toys-per-job", "4",
+                        "--generate", "default", gen2, "--pull-toys", "6", "--jobs", "3",
+                        "--formats", "png"],
                        capture_output=True, text=True)
     (run["base"] / "bias_test.log").write_text(p.stdout + p.stderr)
     assert p.returncode == 0, p.stderr[-3000:]
+    assert "WARNING" not in p.stdout, p.stdout[-3000:]
     res = json.loads((out / "bias_results.json").read_text())
-    assert res["asimov"][str(masses[-1])]["sigma"] > 0
-    (point,) = res["points"]
-    for mode in ("envelope", "fixed"):
-        assert point["summary"][mode]["n"] == 5 and point["summary"][mode]["n_failed"] == 0
-        assert (out / "plots" / f"rfit_default_{mode}_M{masses[-1]}_mu1.png").exists()
-    assert len(point["toys"]["pull_fits"]) == 2
+    assert res["asimov"][str(masses[-1])]["sigma"] > 0 and res["failed_jobs"] == []
+    assert res["categories"] == list(meta["categories"])
+    assert {pt["generate"] for pt in res["points"]} == {"default", gen2}
+    for point in res["points"]:
+        for mode in ("envelope", "fixed"):
+            s = point["summary"][mode]
+            assert s["n"] == 10 and s["n_failed"] == 0 and s["n_reported_ok"] == 10
+            assert s["n_failed_fit"] == 0 and s["n_failed_unexplained"] == 0
+            assert (out / "plots" / f"rfit_{point['generate']}_{mode}_M{masses[-1]}_mu1.png").exists()
+        idx = point["toys"]["envelope_index"]
+        assert len(idx) == 10 and all(len(i) == len(meta["categories"]) for i in idx)
+        assert len(point["toys"]["pull_fits"]) == 6  # 4 from the first job, 2 from the second
+        fixed = point["summary"]["fixed"]
+        assert abs(fixed["mean"] - mu) < 4 * fixed["std"] / math.sqrt(fixed["n"])
+    seeds = [int(re.search(r"\.(\d+)\.root$", f.name).group(1))
+             for f in (out / "work").glob("*/job*/higgsCombine.gen.GenerateOnly.*.root")]
+    assert len(seeds) == 6 and len(set(seeds)) == 6
     assert (out / "plots" / "bias_summary_default.png").exists()
     assert (out / "bias_summary.md").exists()
+
+
+def test_bias_test_survives_a_failing_job(run, tmp_path, monkeypatch):
+    """A Combine job that fails is recorded (failed_jobs, its toys counted as failed); the other
+    jobs are analysed and the outputs are written."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    masses = expected_masses(run["fit_range"])
+    original = BT.Runner.job
+
+    def job(self, gen, mass, mu, j, *a):
+        if j == 1:
+            raise RuntimeError("simulated failure")
+        return original(self, gen, mass, mu, j, *a)
+
+    monkeypatch.setattr(BT.Runner, "job", job)
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--masses", str(masses[-1]), "--mu", "0",
+                                      "--ntoys", "6", "--toys-per-job", "3", "--fits", "fixed",
+                                      "--jobs", "2", "--formats", "png"])
+    BT.main()
+    res = json.loads((tmp_path / "bias_results.json").read_text())
+    assert len(res["failed_jobs"]) == 1 and "simulated failure" in res["failed_jobs"][0]["error"]
+    s = res["points"][0]["summary"]["fixed"]
+    assert s["n"] == 3 and s["n_failed"] == 3 and s["n_lost_in_failed_jobs"] == 3
+    assert s["n_failed_unexplained"] == 0
+    assert "1 Combine job(s) failed" in (tmp_path / "bias_summary.md").read_text()
+
+
+def test_make_datacards_detects_a_shape_mismatch(ROOT, run):
+    """The shape check of make_datacards.py passes on the combined workspace and fails when a
+    background shape parameter or the signal differs from the source workspace."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import make_datacards as MD
+    summary = run["ws"]
+    src_f = ROOT.TFile.Open(str(run["out"] / "workspace" / "dijet_workspace.root"))
+    src = src_f.Get("w")
+    f = ROOT.TFile.Open(str(run["out"] / "datacards" / "datacard_combined.root"))
+    w = f.Get("w")
+    c = next(iter(summary["categories"]))
+    masses = summary["categories"][c]["signal"]["masses"]
+    mh, mh_src = w.var(summary["mass_variable"]), src.var(summary["mass_variable"])
+    assert MD.check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses) == []
+    default = summary["categories"][c]["background"]["functions"][summary["categories"][c]["background"]["default"]]
+    par = next(v for v in w.pdf(default).getVariables()
+               if not v.isConstant() and "mjj" not in v.GetName() and v.GetName() != summary["mass_variable"])
+    par.setVal(par.getVal() + 0.5)
+    problems = MD.check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses)
+    assert any("background function" in x for x in problems), problems
 
 
 # ---- fit-range scan ------------------------------------------------------------------------------
