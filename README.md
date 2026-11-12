@@ -166,6 +166,12 @@ and the failed jobs are listed in `failed_jobs`) and any other missing result
 for the envelope fits, the selected function index of every category (`envelope_index`, in the
 order of `categories`).
 
+An interrupted run (for example a machine that is shut down) is continued by running the same
+command again with `--resume`: every finished Combine job leaves a marker (`done.json`) with its
+settings, and jobs whose settings match are reused instead of being run again (also the Asimov
+fits). The run then completes as if it had not been interrupted; `bias_results.json` records
+how many jobs were reused (`resumed`).
+
 ## Tests
 
 Run inside the analysis environment, from the repository root:

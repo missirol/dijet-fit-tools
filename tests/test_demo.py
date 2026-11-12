@@ -11,7 +11,7 @@ from conftest import REPO
 
 def test_bin_normalisation_demo(tmp_path):
     p = subprocess.run([sys.executable, str(REPO / "demo" / "bin_normalisation" / "run_demo.py"), "all",
-                        "-o", str(tmp_path), "--masses", "200", "--mu", "0"],
+                        "-o", str(tmp_path), "--masses", "200", "300", "--mu", "0"],
                        capture_output=True, text=True)
     (tmp_path / "demo.log").write_text(p.stdout + p.stderr)
     assert p.returncode == 0, p.stderr[-3000:]
@@ -20,5 +20,6 @@ def test_bin_normalisation_demo(tmp_path):
     assert abs(bias["EXACT"]) < 0.005 and abs(bias["NEW"]) < 0.02, bias
     assert abs(bias["OLD"]) > 1.0 and abs(bias["BKG_ONLY"]) > 0.1, bias
     assert abs(sum(fit["NEW"]["mismatch_bkg"])) < 1e-3 and abs(sum(fit["OLD"]["mismatch_bkg"])) > 100
-    for name in ("bias_vs_mass.png", "prediction_differences_M200_mu0.png", "fit_M200_mu0_NEW.png"):
+    for name in ("bias_vs_mass.png", "prediction_differences_M200_mu0.png",
+                 "prediction_differences_M300_mu0.png", "fit_M200_mu0_NEW.png"):
         assert (tmp_path / "plots" / name).exists(), name

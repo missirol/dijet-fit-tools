@@ -35,13 +35,20 @@ Outputs (in --outdir):
   plots/pull_<gen>_M<M>_mu<mu>.png         pull distributions (with --pull-toys)
   plots/bias_summary_<gen>.png             bias vs mass for all mu
   work/                 Combine outputs and logs
+
+With --resume, an interrupted run is continued: rerun it with the same arguments and
+--resume. Every finished Combine job (and Asimov fit) leaves a marker file (done.json) with its
+settings; jobs whose marker matches the current settings (workspace, seed, toys, r range,
+generating functions, fits, pull toys) are not run again, everything else is.
 """
 import argparse
 import itertools
+import json
 import math
 import os
 import re
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -103,13 +110,44 @@ class Runner:
         self.ws = (card_dir / meta["combined_workspace"]).resolve()
         self.cats = list(meta["categories"])
         self.idx_names = [meta["categories"][c]["index"] for c in self.cats]
+        self.reused = dict(asimov=0, toys=0)
+        self._lock = threading.Lock()
+
+    def _settings(self, **kw):
+        st = self.ws.stat()
+        return dict(workspace=str(self.ws), workspace_size=st.st_size,
+                    workspace_mtime=st.st_mtime_ns, **kw)
+
+    def _reuse(self, d, settings):
+        """With --resume: the stored result of a finished job with the same settings, else None."""
+        marker = d / "done.json"
+        if not self.args.resume or not marker.exists():
+            return None
+        try:
+            done = read_json(marker)
+        except ValueError:
+            return None
+        if done.get("settings") != json.loads(json.dumps(settings)):
+            return None
+        with self._lock:
+            self.reused[settings["kind"]] += 1
+        return done["result"]
+
+    @staticmethod
+    def _finish(d, settings, result):
+        write_json(d / "done.json", dict(settings=settings, result=result))
 
     def combine(self, args, cwd, log):
         C.run(["combine", *map(str, args)], cwd, log)
 
     def asimov_sigma(self, mass):
         d = self.work / f"asimov_M{mass}"
+        settings = self._settings(kind="asimov", mass=mass)
+        done = self._reuse(d, settings)
+        if done is not None:
+            return done
         d.mkdir(parents=True, exist_ok=True)
+        (d / "done.json").unlink(missing_ok=True)
         log = d / "combine.log"
         log.write_text("")
         self.combine(["-M", "FitDiagnostics", self.ws, "-m", mass, "-t", "-1", "--expectSignal", 1,
@@ -119,16 +157,26 @@ class Runner:
         if not m:
             raise RuntimeError(f"no Asimov fit result in {log}")
         r, lo, hi = map(float, m[-1])
-        return dict(r=r, err_lo=lo, err_hi=hi, sigma=0.5 * (lo + hi))
+        res = dict(r=r, err_lo=lo, err_hi=hi, sigma=0.5 * (lo + hi))
+        self._finish(d, settings, res)
+        return res
 
     def job(self, gen, mass, mu, j, ntoys, seed, rrange, pull_toys):
         """Generate ntoys toys and fit them; returns the per-toy results of this job."""
         d = self.work / f"{gen}_M{mass}_mu{fmt_mu(mu)}" / f"job{j}"
-        d.mkdir(parents=True, exist_ok=True)
-        log = d / "combine.log"
-        log.write_text("")
         gidx = gen_indices(self.meta, gen)
         setp = ",".join(f"{self.meta['categories'][c]['index']}={gidx[c]}" for c in self.cats)
+        settings = self._settings(kind="toys", generate=gen, set_parameters=setp, mass=mass, mu=mu,
+                                  job=j, ntoys=ntoys, seed=seed, r_range=list(rrange),
+                                  fits=list(self.args.fits), pull_toys=pull_toys)
+        done = self._reuse(d, settings)
+        if done is not None:
+            return dict(done, log=d / done["log"], fits={k: d / v for k, v in done["fits"].items()},
+                        **({"pull_file": d / done["pull_file"]} if "pull_file" in done else {}))
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "done.json").unlink(missing_ok=True)
+        log = d / "combine.log"
+        log.write_text("")
         common = [self.ws, "-m", mass, "--toysNoSystematics", "-s", seed]
         self.combine(["-M", "GenerateOnly", *common, "-t", ntoys, "--expectSignal", mu,
                       "--saveToys", "--setParameters", setp, "-n", ".gen"], d, log)
@@ -146,6 +194,9 @@ class Runner:
             self.combine(["-M", "FitDiagnostics", *fit, "-t", pull_toys, "--robustFit", 1,
                           "--skipBOnlyFit", "-n", ".pull"], d, log)
             out["pull_file"] = d / "fitDiagnostics.pull.root"
+        self._finish(d, settings, dict(seed=seed, ntoys=ntoys, log=log.name,
+                                       fits={k: v.name for k, v in out["fits"].items()},
+                                       **({"pull_file": out["pull_file"].name} if pull_toys else {})))
         return out
 
 
@@ -303,6 +354,9 @@ def main():
     ap.add_argument("--pull-mu", nargs="*", type=float,
                     help="signal strengths for which the pulls are computed (default: all)")
     ap.add_argument("--seed", type=int, default=1000)
+    ap.add_argument("--resume", action="store_true",
+                    help="continue an interrupted run (same arguments): reuse the finished "
+                         "Combine jobs in OUTDIR/work whose settings match")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = ap.parse_args()
 
@@ -370,9 +424,13 @@ def main():
                       f"{str(e)[-300:]}", flush=True)
             if k % max(1, len(tasks) // 20) == 0 or k == len(tasks):
                 print(f"  {k}/{len(tasks)} jobs done", flush=True)
+    if args.resume:
+        print(f"--resume: reused {runner.reused['toys']} finished job(s) and "
+              f"{runner.reused['asimov']} Asimov fit(s)", flush=True)
 
     # ---- analysis
     payload = dict(datacards=str(meta_path), masses=masses, mu=args.mu, ntoys=args.ntoys,
+                   resumed=dict(runner.reused) if args.resume else None,
                    generate=args.generate, fits=args.fits, bias_criterion=BIAS_CRITERION,
                    r_range_sigmas=R_RANGE_SIGMAS, discrete_profiling_options=C.DISCRETE_PROFILING_OPTIONS,
                    categories=runner.cats, asimov=asimov, failed_jobs=failed_jobs, points=[])

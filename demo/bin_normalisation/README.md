@@ -46,8 +46,8 @@ minus the yield used in the likelihood), `results.json`.
 **plot** writes `plots/`:
 
 * `bias_vs_mass.png`: (r̂ − μ)/σ_r on Asimov data for every model, mass and μ;
-* `prediction_differences_M<M>_mu<mu>.png`: the fitted predictions of each model minus the
-  truth, in units of √N per bin; the dashed line is `OLD` evaluated at the true parameters,
+* `prediction_differences_M<M>_mu<mu>.png` (one per signal mass, for the first `--mu`): the
+  fitted predictions of each model minus the truth, in units of √N per bin; the dashed line is `OLD` evaluated at the true parameters,
   without refitting;
 * `fit_M<M>_mu<mu>_<model>.png`: the fit of category 0, with the pull sub-pad.
 

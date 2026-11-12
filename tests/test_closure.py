@@ -439,9 +439,9 @@ def test_bias_test_script(run):
     assert (out / "bias_summary.md").exists()
 
 
-def test_bias_test_survives_a_failing_job(run, tmp_path, monkeypatch):
+def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch):
     """A Combine job that fails is recorded (failed_jobs, its toys counted as failed); the other
-    jobs are analysed and the outputs are written."""
+    jobs are analysed and the outputs are written. --resume then reruns only the failed job."""
     sys.path.insert(0, str(REPO / "scripts"))
     import bias_test as BT
     masses = expected_masses(run["fit_range"])
@@ -464,6 +464,28 @@ def test_bias_test_survives_a_failing_job(run, tmp_path, monkeypatch):
     assert s["n"] == 3 and s["n_failed"] == 3 and s["n_lost_in_failed_jobs"] == 3
     assert s["n_failed_unexplained"] == 0
     assert "1 Combine job(s) failed" in (tmp_path / "bias_summary.md").read_text()
+
+    # --resume with the same arguments: only the failed job runs again, the finished job and the
+    # Asimov fit are reused, and the result is complete
+    first = res["points"][0]["toys"]["fixed"]  # r of the toys of job 0
+    monkeypatch.setattr(BT.Runner, "job", original)
+    calls = []
+    monkeypatch.setattr(BT.C, "run", lambda cmd, *a, _run=BT.C.run: (calls.append(cmd[2]), _run(cmd, *a)))
+    monkeypatch.setattr(sys, "argv", sys.argv + ["--resume"])
+    BT.main()
+    res2 = json.loads((tmp_path / "bias_results.json").read_text())
+    assert res2["failed_jobs"] == [] and res2["resumed"] == {"asimov": 1, "toys": 1}
+    assert calls == ["GenerateOnly", "MultiDimFit"]  # one job, one fit mode; no Asimov fit
+    s = res2["points"][0]["summary"]["fixed"]
+    assert s["n"] == 6 and s["n_failed"] == 0 and s["n_failed_unexplained"] == 0
+    assert res2["points"][0]["toys"]["fixed"][:3] == first  # job 0 taken from the first run
+
+    # different settings (another seed): nothing is reused
+    calls.clear()
+    monkeypatch.setattr(sys, "argv", sys.argv + ["--seed", "777"])
+    BT.main()
+    assert json.loads((tmp_path / "bias_results.json").read_text())["resumed"] == {"asimov": 1, "toys": 0}
+    assert calls.count("GenerateOnly") == 2
 
 
 def test_make_datacards_detects_a_shape_mismatch(ROOT, run):

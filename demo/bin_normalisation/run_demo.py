@@ -378,51 +378,52 @@ def step_plot(args):
     keep += [fr, leg, t]
     c.SaveAs(str(pdir / "bias_vs_mass.png"))
 
-    # 2) differences of the fitted background predictions (category 0, Asimov, first mass, mu=0)
-    mass, mu = masses[0], truth["mu"][0]
-    a = res["fits"][f"{mass}_{mu:g}"]["asimov"]
-    c2 = ROOT.TCanvas("cd", "", 1000, 800)
-    c2.Divide(1, 2)
-    panels = (("(fitted prediction - EXACT) / #sigma_{stat}", 1.0, ("OLD", "OLD_no_refit", "BKG_ONLY", "NEW")),
-              ("(fitted prediction - EXACT) / #sigma_{stat} #times 10^{3}", 1e3, ("BKG_ONLY", "NEW")))
-    labels = dict(OLD="OLD (fitted)", OLD_no_refit="OLD at the true parameters (no refit)",
-                  BKG_ONLY="BKG_ONLY (fitted)", NEW="NEW (fitted)")
-    nref = np.array(a["EXACT"]["cat0"]["bkg"]) + np.array(a["EXACT"]["cat0"]["sig"])
-    for ip, (ttl, scale, models) in enumerate(panels):
-        p = c2.cd(ip + 1)
-        p.SetGridy()
-        p.SetLeftMargin(0.1)
-        p.SetRightMargin(0.03)
-        curves = {m: (np.array(a[m]["cat0"]["bkg"]) + np.array(a[m]["cat0"]["sig"]) - nref) / np.sqrt(exact_n) * scale
-                  for m in models}
-        hi = 1.15 * max(np.abs(v).max() for v in curves.values())
-        frm = p.DrawFrame(XMIN, -hi, XMAX, 1.6 * hi, f";m_{{jj}} [GeV];{ttl}")
-        frm.GetYaxis().SetTitleSize(0.045)
-        frm.GetYaxis().SetTitleOffset(0.9)
-        frm.GetXaxis().SetTitleSize(0.045)
-        keep.append(frm)
-        lg = ROOT.TLegend(0.12, 0.72, 0.97, 0.89)
-        lg.SetNColumns(2)
-        lg.SetBorderSize(0)
-        lg.SetFillStyle(0)
-        lg.SetTextSize(0.045)
-        for m in models:
-            g = ROOT.TGraph(NBINS, array("d", xs), array("d", curves[m]))
-            g.SetLineColor(col.get(m, ROOT.kRed + 1))
-            g.SetLineStyle(2 if m == "OLD_no_refit" else 1)
-            g.SetLineWidth(2)
-            g.Draw("L same")
-            lg.AddEntry(g, labels[m], "l")
-            keep.append(g)
-        lg.Draw()
-        keep.append(lg)
-    c2.cd(1)
-    tt = ROOT.TLatex(0.12, 0.93, f"Asimov, M = {mass} GeV, #mu = {mu:g}, category 0; #sigma_{{stat}} = #sqrt{{N}} per bin")
-    tt.SetNDC()
-    tt.SetTextSize(0.045)
-    tt.Draw()
-    keep.append(tt)
-    c2.SaveAs(str(pdir / f"prediction_differences_M{mass}_mu{mu:g}.png"))
+    # 2) differences of the fitted predictions (category 0, Asimov, first mu), one plot per mass
+    mu = truth["mu"][0]
+    for mass in masses:
+        a = res["fits"][f"{mass}_{mu:g}"]["asimov"]
+        c2 = ROOT.TCanvas(f"cd{mass}", "", 1000, 800)
+        c2.Divide(1, 2)
+        panels = (("(fitted prediction - EXACT) / #sigma_{stat}", 1.0, ("OLD", "OLD_no_refit", "BKG_ONLY", "NEW")),
+                  ("(fitted prediction - EXACT) / #sigma_{stat} #times 10^{3}", 1e3, ("BKG_ONLY", "NEW")))
+        labels = dict(OLD="OLD (fitted)", OLD_no_refit="OLD at the true parameters (no refit)",
+                      BKG_ONLY="BKG_ONLY (fitted)", NEW="NEW (fitted)")
+        nref = np.array(a["EXACT"]["cat0"]["bkg"]) + np.array(a["EXACT"]["cat0"]["sig"])
+        for ip, (ttl, scale, models) in enumerate(panels):
+            p = c2.cd(ip + 1)
+            p.SetGridy()
+            p.SetLeftMargin(0.1)
+            p.SetRightMargin(0.03)
+            curves = {m: (np.array(a[m]["cat0"]["bkg"]) + np.array(a[m]["cat0"]["sig"]) - nref) / np.sqrt(exact_n) * scale
+                      for m in models}
+            hi = 1.15 * max(np.abs(v).max() for v in curves.values())
+            frm = p.DrawFrame(XMIN, -hi, XMAX, 1.6 * hi, f";m_{{jj}} [GeV];{ttl}")
+            frm.GetYaxis().SetTitleSize(0.045)
+            frm.GetYaxis().SetTitleOffset(0.9)
+            frm.GetXaxis().SetTitleSize(0.045)
+            keep.append(frm)
+            lg = ROOT.TLegend(0.12, 0.72, 0.97, 0.89)
+            lg.SetNColumns(2)
+            lg.SetBorderSize(0)
+            lg.SetFillStyle(0)
+            lg.SetTextSize(0.045)
+            for m in models:
+                g = ROOT.TGraph(NBINS, array("d", xs), array("d", curves[m]))
+                g.SetLineColor(col.get(m, ROOT.kRed + 1))
+                g.SetLineStyle(2 if m == "OLD_no_refit" else 1)
+                g.SetLineWidth(2)
+                g.Draw("L same")
+                lg.AddEntry(g, labels[m], "l")
+                keep.append(g)
+            lg.Draw()
+            keep.append(lg)
+        c2.cd(1)
+        tt = ROOT.TLatex(0.12, 0.93, f"Asimov, M = {mass} GeV, #mu = {mu:g}, category 0; #sigma_{{stat}} = #sqrt{{N}} per bin")
+        tt.SetNDC()
+        tt.SetTextSize(0.045)
+        tt.Draw()
+        keep.append(tt)
+        c2.SaveAs(str(pdir / f"prediction_differences_M{mass}_mu{mu:g}.png"))
 
     # 3) fit plots with pull sub-pads (category 0, Asimov) for every model and data set
     f = ROOT.TFile.Open(str(out / "data.root"))
