@@ -76,3 +76,9 @@ def test_bias_test_log_fit_counts(tmp_path):
     assert BT.log_fit_counts(log, "envelope") == dict(ok=2, failed=1, found=True)
     assert BT.log_fit_counts(log, "fixed") == dict(ok=3, failed=0, found=True)
     assert BT.log_fit_counts(log, "pull")["found"] is False
+    # Combine's actual layout: after a failure, 'best fit parameter values' is printed again with
+    # the previous toy's values (one print per toy); that print is not a success
+    fit = " --- MultiDimFit ---\nbest fit parameter values: \n   r : +1.0\nDoing initial fit: \n"
+    log.write_text("$ combine -M MultiDimFit ws.root -t 4 --algo none -n .fixed\n" + fit * 2
+                   + " WARNING: MultiDimFit failed\n" + fit * 2)
+    assert BT.log_fit_counts(log, "fixed") == dict(ok=3, failed=1, found=True)

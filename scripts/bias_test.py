@@ -204,14 +204,26 @@ def log_fit_counts(log, mode):
     """Successful and failed toy fits reported by Combine in the MultiDimFit section of `mode`
     (the section of the log that starts with the combine command ending in '-n .<mode>').
     Combine prints 'best fit parameter values' after every successful fit and 'MultiDimFit
-    failed' otherwise; a failed fit writes no row to the limit tree."""
+    failed' otherwise; a failed fit writes no row to the limit tree. After a failure Combine
+    still prints 'best fit parameter values' (with the values of the previous toy): that print
+    belongs to the failed toy and is not counted as a success."""
     text = Path(log).read_text(errors="replace") if Path(log).exists() else ""
     sections = re.split(r"(?m)^\$ combine ", text)
     sec = [x for x in sections if x.startswith("-M MultiDimFit") and
            re.search(rf"-n \.{re.escape(mode)}\s*$", x.splitlines()[0])]
     body = sec[-1] if sec else ""
-    return dict(ok=body.count("best fit parameter values"), failed=body.count("MultiDimFit failed"),
-                found=bool(sec))
+    ok = failed = 0
+    after_failure = False
+    for line in body.splitlines():
+        if "MultiDimFit failed" in line:
+            failed += 1
+            after_failure = True
+        elif "best fit parameter values" in line:
+            if after_failure:
+                after_failure = False  # the stale print of the failed toy
+            else:
+                ok += 1
+    return dict(ok=ok, failed=failed, found=bool(sec))
 
 
 def collect(ROOT, job, idx_names):
