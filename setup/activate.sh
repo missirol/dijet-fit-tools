@@ -1,7 +1,8 @@
 # Activate the analysis environment in the current shell (bash or zsh). Source it, once per shell:
 #
 #   source setup/activate.sh                       (environment <repo>/env)
-#   DIJET_ENV=PREFIX source setup/activate.sh      (another environment)
+#   export DIJET_ENV=PREFIX; source setup/activate.sh   (another environment; exported, so that
+#                                                      sourcing again and envrun.sh use it too)
 #
 # It takes no arguments: a sourced script sees the positional parameters of the caller (e.g. of
 # a script that sources it), which must not be mistaken for an environment path.

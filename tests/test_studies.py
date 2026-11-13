@@ -61,4 +61,9 @@ def test_category_study_runs_on_synthetic_histograms(ROOT, tmp_path):
         assert rows[cur]["rel"] == pytest.approx([1.0, 1.0])
         ranked = [rows[f"R ranked s/b, {n} groups"]["frac"] for n in (1, 3, 5)]
         assert all(np.all(np.array(b) >= np.array(a) - 1e-9) for a, b in zip(ranked, ranked[1:]))
+    # every scheme, the ranked one included, respects the |dphi| cut (default 1.0)
+    dphi_bins = np.arange(20) * np.pi / 20  # lower edges
+    for n, lab in res["ranked_labels"].items():
+        lab = np.array(lab)
+        assert np.all(lab[:, dphi_bins + np.pi / 20 <= 1.0] < 0), n
     assert (out / "summary.md").exists() and (out / "signal_regions.png").exists()

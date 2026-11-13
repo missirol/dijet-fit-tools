@@ -395,7 +395,7 @@ def main():
     args = ap.parse_args()
     BIAS_THRESHOLD = args.bias_threshold
 
-    for opt, vals in (("--mu", [round(v, 9) for v in args.mu]), ("--masses", args.masses or []),
+    for opt, vals in (("--mu", [fmt_mu(v) for v in args.mu]), ("--masses", args.masses or []),
                       ("--generate", args.generate)):
         if len(set(vals)) != len(vals):  # two jobs would share one directory and overwrite each other
             sys.exit(f"ERROR: duplicate values in {opt}: {vals}")
@@ -438,6 +438,7 @@ def main():
         if m in asimov:
             a = asimov[m]
             print(f"  M{m}: r = {a['r']:.4f} -{a['err_lo']:.4f}/+{a['err_hi']:.4f}")
+    all_masses = list(masses)  # the seeds are assigned over all of them (reproducible, --resume)
     masses = [m for m in masses if m in asimov]
     if not masses:
         sys.exit("ERROR: all Asimov fits failed")
@@ -446,8 +447,11 @@ def main():
     tasks = []
     seed = args.seed - 1  # one seed per job, unique within the run
     for gi, gen in enumerate(args.generate):
-        for mi, m in enumerate(masses):
+        for mi, m in enumerate(all_masses):
             for ui, mu in enumerate(args.mu):
+                if m not in asimov:  # Asimov fit failed: no toys, but the seeds stay the same
+                    seed += math.ceil(args.ntoys / args.toys_per_job)
+                    continue
                 half = R_RANGE_SIGMAS * asimov[m]["sigma"]
                 rrange = (round(mu - half, 4), round(mu + half, 4))
                 njobs = math.ceil(args.ntoys / args.toys_per_job)
@@ -494,8 +498,13 @@ def main():
           "| M [GeV] | r (Asimov) | sigma_r |", "|---|---|---|"]
     md += [f"| {m} | {asimov[m]['r']:.4f} | -{asimov[m]['err_lo']:.4f} / +{asimov[m]['err_hi']:.4f} |"
            for m in masses]
-    if failed_jobs:
-        md += ["", f"**{len(failed_jobs)} Combine job(s) failed** (their toys count as failed; "
+    lost_masses = [f["mass"] for f in failed_jobs if f["generate"] == "asimov"]
+    toy_jobs = [f for f in failed_jobs if f["generate"] != "asimov"]
+    if lost_masses:
+        md += ["", f"**The Asimov fit failed at M = {lost_masses} GeV: these masses are left out** "
+               "(details in bias_results.json, `failed_jobs`)."]
+    if toy_jobs:
+        md += ["", f"**{len(toy_jobs)} Combine job(s) failed** (their toys count as failed; "
                "details in bias_results.json, `failed_jobs`)."]
     above = []
     for gen in args.generate:

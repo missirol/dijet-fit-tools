@@ -15,7 +15,7 @@ in this README assume one of them):
 | command | does |
 |---|---|
 | `setup/shell.sh [PREFIX]` | opens a new bash shell (reading your `~/.bashrc`) with the environment active; leave it with `exit` |
-| `source setup/activate.sh` | activates the environment in the current bash or zsh shell (it takes no arguments; another environment: `DIJET_ENV=PREFIX source setup/activate.sh`) |
+| `source setup/activate.sh` | activates the environment in the current bash or zsh shell (it takes no arguments; another environment: `export DIJET_ENV=PREFIX` first) |
 | `setup/envrun.sh COMMAND ...` | runs one command in the environment, e.g. `setup/envrun.sh pytest` |
 
 A non-default environment is given with `DIJET_ENV=PREFIX` (or as the argument of `shell.sh`).
@@ -194,7 +194,8 @@ Every job (`--toys-per-job` toys) has its own random seed. A toy fit counts as s
 it has a result in Combine's output tree, and the Combine log of every job is checked: the
 numbers of successful (`n_reported_ok`) and failed fits (`n_failed_fit`) are stored per point,
 together with toys lost in Combine jobs that failed (`n_lost_in_failed_jobs`; the run continues
-and the failed jobs are listed in `failed_jobs`) and any other missing result
+and the failed jobs are listed in `failed_jobs`; a mass whose Asimov fit fails is left out and
+listed there too, and the other masses keep their seeds) and any other missing result
 (`n_failed_unexplained`, which should be 0). `bias_results.json` also stores, per toy, r and,
 for the envelope fits, the selected function index of every category (`envelope_index`, in the
 order of `categories`).

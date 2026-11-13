@@ -27,8 +27,8 @@ Outputs: `summary.md` (tables, regions of the ranked scheme), `results.json`, an
 |---|---|---|---|
 | current: 0.1 slices of |Δy| < 1.1 | 11 | 1 · 1 · 1 · 1 | 0.85–0.91 |
 | one category |Δy| < 1.1 | 1 | 0.98 for all masses | |
-| |Δy| edges 0, 0.5, 1, 1.5, 2, 2.5 | 5 | 1.08 · 1.08 · 1.09 · 1.10 | 0.94–0.98 |
-| the same × back-to-back split | 10 | 1.09 · 1.10 · 1.12 · 1.15 | 0.98 |
+| |Δy| edges 0, 0.5, 1, 1.5, 2, 2.5 | 5 | 1.08 · 1.09 · 1.09 · 1.11 | 0.95–0.98 |
+| the same × back-to-back split | 10 | 1.09 · 1.10 · 1.12 · 1.15 | 0.98–0.99 |
 | 2D bins ranked by s/b, 5 groups | 5 | 1.09 · 1.11 · 1.13 · 1.15 | 0.98–0.99 |
 
 - The fine 0.1 slicing of |Δy| < 1.1 adds only 2% over a single category.

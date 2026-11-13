@@ -32,5 +32,5 @@ DIJET_ENV="$PREFIX" "$REPO/setup/envrun.sh" python -c \
 if [ "$PREFIX" = "$REPO/env" ]; then
   echo "Done. Use the environment with:  setup/shell.sh   (or: source setup/activate.sh)"
 else
-  echo "Done. Use the environment with:  setup/shell.sh $PREFIX   (or: DIJET_ENV=$PREFIX source setup/activate.sh)"
+  echo "Done. Use the environment with:  setup/shell.sh $PREFIX   (or: export DIJET_ENV=$PREFIX; source setup/activate.sh)"
 fi

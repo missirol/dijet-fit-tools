@@ -129,3 +129,16 @@ def test_shell_warns_if_the_environment_cannot_be_activated(other_root, tmp_path
     p = subprocess.run([str(REPO / "setup" / "shell.sh"), str(tmp_path / "nothing")], env=env,
                        capture_output=True, text=True, input="exit\n", cwd=tmp_path)
     assert "NOT active" in p.stderr
+
+
+def test_clean_env_reports_what_is_not_the_environments_own(tmp_path):
+    """Only settings inside the environment (with a '/' boundary) are left out of the report;
+    a list that also contains another ROOT, or a sibling directory, is reported."""
+    own = tmp_path / "env"
+    script = (f". {REPO}/setup/_clean_env.sh\nDIJET_PREFIX={own}\n"
+              f"export LD_LIBRARY_PATH={own}/lib:/opt/root/lib ROOTSYS={own}-other PYTHONPATH={own}/lib\n"
+              "_dijet_clean_env\necho LEFT ${LD_LIBRARY_PATH:-none} ${ROOTSYS:-none}\n")
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "LD_LIBRARY_PATH" in p.stderr and "ROOTSYS" in p.stderr and "PYTHONPATH" not in p.stderr
+    assert "LEFT none none" in p.stdout

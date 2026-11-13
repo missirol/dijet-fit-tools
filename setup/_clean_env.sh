@@ -13,12 +13,22 @@ ROOT_INCLUDE_PATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH CLING_STANDARD_PCH"
 # directory that contains thisroot.sh). Prints one line listing what was removed (to stderr);
 # settings of the analysis environment itself (DIJET_PREFIX, e.g. its own ROOTSYS and bin/ when
 # it is already active) are removed too (activation sets them again) but not reported.
+# True if every ':'-separated element of $1 is $2 or lies inside it (a "/" boundary).
+_dijet_inside() {
+  local e IFS=":"
+  [ -n "$2" ] || return 1
+  for e in $(echo "$1"); do
+    case "$e" in "$2" | "$2"/*) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+
 _dijet_clean_env() {
   local removed="" v d val newpath="" rootbin="" own="${DIJET_PREFIX:-}"
   if [ -n "${ROOTSYS:-}" ]; then rootbin="${ROOTSYS%/}/bin"; fi
   for v in $(echo "$DIJET_CLEAN_VARS"); do
     val="$(eval "echo \"\${$v:-}\"")"
-    if [ -n "$val" ] && { [ -z "$own" ] || [ "${val#"$own"}" = "$val" ]; }; then
+    if [ -n "$val" ] && ! _dijet_inside "$val" "$own"; then
       removed="$removed $v"
     fi
     unset "$v"
@@ -26,7 +36,7 @@ _dijet_clean_env() {
   local IFS=":"
   for d in $(echo "${PATH:-}"); do
     if [ -n "$d" ] && { [ "${d%/}" = "$rootbin" ] || [ -f "$d/thisroot.sh" ]; }; then
-      if [ -z "$own" ] || [ "${d#"$own"}" = "$d" ]; then
+      if ! _dijet_inside "$d" "$own"; then
         removed="$removed PATH:$d"
       fi
       continue
@@ -42,7 +52,8 @@ _dijet_clean_env() {
 
 # Locate micromamba and the environment; sets DIJET_MICROMAMBA, DIJET_PREFIX and
 # MAMBA_ROOT_PREFIX. Usage: _dijet_locate REPO [PREFIX]
-#   PREFIX: argument, else $DIJET_ENV, else REPO/env
+#   PREFIX: the argument if given, else $DIJET_ENV (setup/shell.sh sets it from its argument),
+#           else REPO/env
 #   micromamba: REPO/bin/micromamba (from install_env.sh), else $MAMBA_EXE, else on PATH
 _dijet_locate() {
   local repo="$1"
@@ -60,7 +71,7 @@ _dijet_locate() {
   fi
   if [ ! -d "$DIJET_PREFIX/conda-meta" ]; then
     echo "dijet setup: no conda environment at $DIJET_PREFIX (run setup/install_env.sh, or" \
-         "give the environment path as argument or in DIJET_ENV)" >&2
+         "set DIJET_ENV to the environment path)" >&2
     return 1
   fi
   DIJET_PREFIX="$(cd "$DIJET_PREFIX" && pwd)"

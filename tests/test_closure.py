@@ -523,6 +523,36 @@ def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch
     assert calls.count("GenerateOnly") == 2 and calls.count("FitDiagnostics") == 1
 
 
+def test_bias_test_survives_a_failed_asimov_fit(run, tmp_path, monkeypatch):
+    """A failed Asimov fit leaves its mass out (listed in failed_jobs); the other masses keep the
+    seeds they have without the failure (reproducible, compatible with --resume)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    masses = expected_masses(run["fit_range"])
+    first, last = masses[0], masses[-1]
+    original = BT.Runner.asimov_sigma
+
+    def asimov(self, mass):
+        if mass == first:
+            raise RuntimeError("simulated Asimov failure")
+        return original(self, mass)
+
+    monkeypatch.setattr(BT.Runner, "asimov_sigma", asimov)
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--masses", str(first), str(last), "--mu", "0",
+                                      "--ntoys", "2", "--toys-per-job", "2", "--fits", "fixed",
+                                      "--seed", "500", "--jobs", "1", "--formats", "png"])
+    BT.main()
+    res = json.loads((tmp_path / "bias_results.json").read_text())
+    assert res["masses"] == [last] and [p["mass"] for p in res["points"]] == [last]
+    assert [f["generate"] for f in res["failed_jobs"]] == ["asimov"] and res["failed_jobs"][0]["mass"] == first
+    assert res["points"][0]["summary"]["fixed"]["n"] == 2
+    # seeds 500 (first mass, skipped) and 501 (last mass), as without the failure
+    assert [f.name for f in (tmp_path / "work").glob("*/job0/higgsCombine.gen.*.root")] == \
+        [f"higgsCombine.gen.GenerateOnly.mH{last}.501.root"]
+    assert f"Asimov fit failed at M = [{first}] GeV" in (tmp_path / "bias_summary.md").read_text()
+
+
 def test_bias_test_refuses_duplicate_values(run, tmp_path, monkeypatch):
     """Duplicate values (e.g. --mu 1 1.0) would make two jobs share a directory."""
     sys.path.insert(0, str(REPO / "scripts"))

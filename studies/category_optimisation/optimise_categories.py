@@ -21,14 +21,16 @@ category. The schemes compared (all with |dphi| > --dphi-min, as the current cat
   R  the 2D bins ranked by the mass-averaged s/b (sum over masses of S(M)/S_tot(M), divided by
      B), grouped into N categories with the boundaries that maximise the mean of
      (Z/Z_max)^2 over the masses (dynamic programming on 300 groups of equal B); the same
-     definition for every mass. The resulting regions follow the s/b contours (2D lookup).
+     definition for every mass (and defined without the mass-window correction below). The
+     resulting regions follow the s/b contours (2D lookup).
+The upper bound Z_max(M) is taken over the 2D bins with |dphi| > --dphi-min.
 
 The 2D histogram has no m_jj axis: B is the data yield for all m_jj, not the background under a
 given signal peak. If --slice-hists is given (a regular expression matching the m_jj histograms
 of |dy| slices in the data and signal files, with named groups `lo` and `hi`, e.g.
 `...dY(?P<lo>\\d+p\\d+)to(?P<hi>\\d+p\\d+)_J1J2_mass`), the ratio (S/sqrt(B)) in the mass window
 [--window] x M over (S/sqrt(B)) for all m_jj is measured per slice; its linear dependence on |dy|
-(1 - k_M |dy|, relative to the first slice) is fitted and applied to S in every 2D bin, also
+(1 - k_M (|dy| - |dy|_first slice)) is fitted and applied to S in every 2D bin, also
 beyond the slices (an extrapolation). Results are given without and with this correction.
 
 Outputs (in --outdir): summary.md (tables, ranked regions), results.json, and the figure
@@ -82,9 +84,9 @@ def zvals(lab, B, S, masses):
     return np.array(out)
 
 
-def ranked_groups(N, B, S, masses, zmax, ngroups=300):
-    """Optimal split of the 2D bins, ranked by the mass-averaged s/b, into N categories."""
-    ok = B > 0
+def ranked_groups(N, B, S, masses, zmax, use, ngroups=300):
+    """Optimal split of the 2D bins in `use`, ranked by the mass-averaged s/b, into N categories."""
+    ok = (B > 0) & use
     d = np.where(ok, sum(S[m] / S[m].sum() for m in masses) / np.where(ok, B, 1), 0.0)
     idx = np.flatnonzero(ok.ravel())
     order = idx[np.argsort(-d.ravel()[idx])]
@@ -147,7 +149,7 @@ def window_slopes(ROOT, args, data_path, sig_paths, masses):
         # 1 - k (dy - dy0), least squares through (dy0, 1)
         x = dys - dys[0]
         k[m] = float(-np.sum(x * (rel - 1)) / np.sum(x * x))
-        detail[m] = dict(dy=dys.tolist(), relative_ratio=rel.tolist())
+        detail[m] = dict(dy=dys.tolist(), relative_ratio=rel.tolist(), dy0=float(dys[0]))
     return k, detail
 
 
@@ -288,23 +290,25 @@ def main():
     schemes["G A x back-to-back split"] = np.where(schemes[cur] >= 0, schemes[cur] * 2 + b2b, -1)
     schemes = {k: v.astype(int) for k, v in schemes.items()}
 
-    ok = B > 0
+    ok = (B > 0) & use  # the upper bound and the ranked scheme also respect the |dphi| cut
     zmax0 = {m: float(np.sqrt((S0[m][ok] ** 2 / B[ok]).sum())) for m in masses}
     ranked = {}
-    for N in args.ranked:
-        lab = ranked_groups(N, B, S0, masses, zmax0)
+    for N in args.ranked:  # defined with the uncorrected S, the same in both tables
+        lab = ranked_groups(N, B, S0, masses, zmax0, use)
         schemes[f"R ranked s/b, {N} groups"] = lab
         ranked[N] = lab
 
     corrections = {"raw": {m: 0.0 for m in masses}}
+    dy0 = 0.0
     window_detail = None
     if args.slice_hists:
         k, window_detail = window_slopes(ROOT, args, args.data, sig_paths, masses)
         corrections["corrected"] = k
+        dy0 = window_detail[masses[0]]["dy0"]  # the slope is measured relative to the first slice
     table = {name: {"N": int(len(np.unique(lab[lab >= 0])))} for name, lab in schemes.items()}
     zmax_all = {}
     for kind, k in corrections.items():
-        S = {m: S0[m] * np.clip(1 - k[m] * DY, 0, None) for m in masses}
+        S = {m: S0[m] * np.clip(1 - k[m] * (DY - dy0), 0, None) for m in masses}
         zmax = {m: float(np.sqrt((S[m][ok] ** 2 / B[ok]).sum())) for m in masses}
         zmax_all[kind] = zmax
         zcur = zvals(schemes[cur], B, S, masses)
