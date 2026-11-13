@@ -17,9 +17,10 @@ Best fits only (MultiDimFit --algo none); the functions chosen by the envelope a
 
 The bias is measured by the mean of (r_fit - mu) in units of the standard deviation of r_fit
 over the toys (the actual statistical uncertainty, including the effect of the envelope). Its
-uncertainty is 1/sqrt(N toys). The criterion is |bias| < --bias-criterion (default 0.5 sigma).
+uncertainty is 1/sqrt(N toys). A bias above --bias-threshold (default 0.5 sigma) in absolute
+value is shown in the plots and reported with a warning; it does not fail the bias test.
 For reference: a bias b (in units of sigma) added in quadrature increases the total uncertainty
-by sqrt(1 + b^2) - 1, i.e. 1% for b = 0.14 (the stricter criterion used in some analyses) and
+by sqrt(1 + b^2) - 1, i.e. 1% for b = 0.14 (a stricter threshold used in some analyses) and
 12% for b = 0.5; a Gaussian 68% interval shifted by b covers the true value with probability
 68.3% (b = 0), 67.8% (0.14), 62.5% (0.5).
 
@@ -33,8 +34,8 @@ measured first; the range of r in the fits is mu +- R_RANGE_SIGMAS x sigma_r.
 
 Outputs (in --outdir):
   bias_results.json     per point: settings, per-toy results, summary statistics (with
-                        `within_criterion`); `failing_points`: the points beyond the criterion
-  bias_summary.md       tables and the verdict
+                        `above_threshold`); `points_above_threshold`: the points with a warning
+  bias_summary.md       tables, and the list of points above the threshold
   plots/rfit_<gen>_<fit>_M<M>_mu<mu>.png   distribution of r_fit with a Gaussian fit
   plots/pull_<gen>_M<M>_mu<mu>.png         pull distributions (with --pull-toys)
   plots/bias_summary_<gen>.png             bias vs mass for all mu
@@ -65,7 +66,7 @@ from dijetfit.common import read_json, setup_root, write_json  # noqa: E402
 from dijetfit.plotting import fit_plot  # noqa: E402
 
 R_RANGE_SIGMAS = 20.0
-BIAS_CRITERION = 0.5  # default of --bias-criterion
+BIAS_THRESHOLD = 0.5  # default of --bias-threshold (warning, not a failure)
 
 
 def fmt_mu(mu):
@@ -312,16 +313,16 @@ def gauss_plot(ROOT, path, values, title, xtitle, labels, formats, center=None, 
 
 
 def summary_plot(ROOT, path, points, masses, mus, fits, formats):
-    """bias / sigma vs mass, one graph per (mu, fit), with the +- BIAS_CRITERION band."""
+    """bias / sigma vs mass, one graph per (mu, fit), with the +- BIAS_THRESHOLD band."""
     c = ROOT.TCanvas("c_sum", "", 900, 600)
     c.SetLeftMargin(0.12)
     ext = [abs(s["bias_over_sigma"]) + s["bias_over_sigma_err"] for p in points.values()
            for f, s in p["summary"].items() if f in fits]
-    ymax = max([0.6, 1.3 * BIAS_CRITERION] + [1.15 * e for e in ext])
+    ymax = max([0.6, 1.3 * BIAS_THRESHOLD] + [1.15 * e for e in ext])
     frame = c.DrawFrame(min(masses) - 40, -ymax, max(masses) + 40, 1.4 * ymax,
                         ";signal mass [GeV];(<r_{fit}> - #mu) / #sigma(r_{fit})")
     frame.GetYaxis().SetTitleOffset(1.3)
-    box = ROOT.TBox(min(masses) - 40, -BIAS_CRITERION, max(masses) + 40, BIAS_CRITERION)
+    box = ROOT.TBox(min(masses) - 40, -BIAS_THRESHOLD, max(masses) + 40, BIAS_THRESHOLD)
     box.SetFillColorAlpha(ROOT.kGreen - 9, 0.5)
     box.Draw()
     line = ROOT.TLine(min(masses) - 40, 0, max(masses) + 40, 0)
@@ -359,7 +360,7 @@ def summary_plot(ROOT, path, points, masses, mus, fits, formats):
 
 
 def main():
-    global BIAS_CRITERION
+    global BIAS_THRESHOLD
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("datacards", help="datacards.json from make_datacards.py")
@@ -384,14 +385,15 @@ def main():
     ap.add_argument("--pull-mu", nargs="*", type=float,
                     help="signal strengths for which the pulls are computed (default: all)")
     ap.add_argument("--seed", type=int, default=1000)
-    ap.add_argument("--bias-criterion", type=float, default=BIAS_CRITERION,
-                    help=f"criterion on |bias| in units of sigma (default: {BIAS_CRITERION})")
+    ap.add_argument("--bias-threshold", type=float, default=BIAS_THRESHOLD,
+                    help="|bias| (in units of sigma) above which a point is reported with a warning "
+                         f"and highlighted; not a failure (default: {BIAS_THRESHOLD})")
     ap.add_argument("--resume", action="store_true",
                     help="continue an interrupted run (same arguments): reuse the finished "
                          "Combine jobs in OUTDIR/work whose settings match")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = ap.parse_args()
-    BIAS_CRITERION = args.bias_criterion
+    BIAS_THRESHOLD = args.bias_threshold
 
     for opt, vals in (("--mu", [round(v, 9) for v in args.mu]), ("--masses", args.masses or []),
                       ("--generate", args.generate)):
@@ -481,13 +483,13 @@ def main():
     # ---- analysis
     payload = dict(datacards=str(meta_path), masses=masses, mu=args.mu, ntoys=args.ntoys,
                    resumed=dict(runner.reused) if args.resume else None,
-                   generate=args.generate, fits=args.fits, bias_criterion=BIAS_CRITERION,
+                   generate=args.generate, fits=args.fits, bias_threshold=BIAS_THRESHOLD,
                    r_range_sigmas=R_RANGE_SIGMAS, discrete_profiling_options=C.DISCRETE_PROFILING_OPTIONS,
                    categories=runner.cats, asimov=asimov, failed_jobs=failed_jobs, points=[])
     md = [f"# Bias test of the signal strength ({len(runner.cats)} categories combined)\n",
           f"Toys generated by Combine from the combined workspace ({args.ntoys} per point); "
           "bias = (mean r_fit - mu) / std(r_fit) over the toys, uncertainty 1/sqrt(N). "
-          f"Criterion |bias| < {BIAS_CRITERION} sigma.\n",
+          f"|bias| above {BIAS_THRESHOLD} sigma is reported with a warning (not a failure).\n",
           "Expected uncertainty sigma_r (Asimov, mu = 1, envelope, robustFit):\n",
           "| M [GeV] | r (Asimov) | sigma_r |", "|---|---|---|"]
     md += [f"| {m} | {asimov[m]['r']:.4f} | -{asimov[m]['err_lo']:.4f} / +{asimov[m]['err_hi']:.4f} |"
@@ -495,7 +497,7 @@ def main():
     if failed_jobs:
         md += ["", f"**{len(failed_jobs)} Combine job(s) failed** (their toys count as failed; "
                "details in bias_results.json, `failed_jobs`)."]
-    failing = []
+    above = []
     for gen in args.generate:
         gidx = gen_indices(meta, gen)
         pts = {}
@@ -504,7 +506,7 @@ def main():
                          for c in runner.cats) + "\n",
                f"| M | mu | fit | toys ok | failed | at r boundary | mean r_fit | std r_fit | "
                f"bias / sigma | median bias / sigma | envelope: same function as generated | "
-               f"|bias| < {BIAS_CRITERION} |",
+               f"|bias| > {BIAS_THRESHOLD} |",
                "|" + "---|" * 12]
         for m, mu in itertools.product(masses, args.mu):
             jobs = sorted(results.get((gen, m, mu), []), key=lambda x: x[0][3])
@@ -547,11 +549,13 @@ def main():
                 if same:
                     s["fraction_same_function"] = float(np.mean(same))
                     s["chosen_functions"] = chosen
-                # verdict: |bias| below the criterion (in units of the spread of r_fit)
-                s["within_criterion"] = bool(np.isfinite(s["bias_over_sigma"])
-                                             and abs(s["bias_over_sigma"]) < BIAS_CRITERION)
-                if not s["within_criterion"]:
-                    failing.append(dict(generate=gen, mass=m, mu=mu, fit=mode,
+                # |bias| above the threshold (in units of the spread of r_fit): a warning only
+                s["above_threshold"] = bool(np.isfinite(s["bias_over_sigma"])
+                                            and abs(s["bias_over_sigma"]) > BIAS_THRESHOLD)
+                if s["above_threshold"]:
+                    print(f"  WARNING (bias): {gen} M{m} mu {mu:g} {mode}: bias / sigma = "
+                          f"{s['bias_over_sigma']:+.3f}, above the threshold {BIAS_THRESHOLD}", flush=True)
+                    above.append(dict(generate=gen, mass=m, mu=mu, fit=mode,
                                         bias_over_sigma=s["bias_over_sigma"]))
                 point["summary"][mode] = s
                 tag = f"{gen}_{mode}_M{m}_mu{fmt_mu(mu)}"
@@ -565,7 +569,7 @@ def main():
                           f"{s['bias_over_sigma']:+.3f} ± {s['bias_over_sigma_err']:.3f} | "
                           f"{s['median_bias_over_sigma']:+.3f} | "
                           + (f"{100 * s['fraction_same_function']:.0f}%" if same else "-") + " | "
-                          + ("yes" if s["within_criterion"] else "**NO**") + " |")
+                          + ("**warning**" if s["above_threshold"] else "-") + " |")
             pulls = []
             for t, res in jobs:
                 for toy, rec in res.get("pull", {}).items():
@@ -596,15 +600,14 @@ def main():
                               f"{s['mean']:+.3f} ± {s['mean_err']:.3f} | {s['std']:.3f} ± {s['std_err']:.3f} |")
         summary_plot(ROOT, outdir / "plots" / f"bias_summary_{gen}", pts, masses, args.mu,
                      args.fits, args.formats)
-    payload["failing_points"] = failing
-    md += ["", f"## Verdict (|bias| < {BIAS_CRITERION} sigma)\n"]
-    if failing:
-        md += [f"**{len(failing)} point(s) fail the criterion:**\n",
-               "| generator | M | mu | fit | bias / sigma |", "|---|---|---|---|---|"]
+    payload["points_above_threshold"] = above
+    md += ["", f"## Points with |bias| > {BIAS_THRESHOLD} sigma (warnings)\n"]
+    if above:
+        md += ["| generator | M | mu | fit | bias / sigma |", "|---|---|---|---|---|"]
         md += [f"| {f['generate']} | {f['mass']} | {f['mu']:g} | {f['fit']} | {f['bias_over_sigma']:+.3f} |"
-               for f in failing]
+               for f in above]
     else:
-        md.append("All points pass.")
+        md.append("None.")
     write_json(outdir / "bias_results.json", payload)
     (outdir / "bias_summary.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))

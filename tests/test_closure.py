@@ -430,7 +430,9 @@ def test_bias_test_script(run):
                        capture_output=True, text=True)
     (run["base"] / "bias_test.log").write_text(p.stdout + p.stderr)
     assert p.returncode == 0, p.stderr[-3000:]
-    assert "WARNING" not in p.stdout, p.stdout[-3000:]
+    # no warning other than about the size of the bias (10 toys: the bias can be large)
+    assert all(ln.startswith("  WARNING (bias)") for ln in p.stdout.splitlines() if "WARNING" in ln), \
+        p.stdout[-3000:]
     res = json.loads((out / "bias_results.json").read_text())
     assert res["asimov"][str(masses[-1])]["sigma"] > 0 and res["failed_jobs"] == []
     assert res["categories"] == list(meta["categories"])
@@ -450,15 +452,17 @@ def test_bias_test_script(run):
              for f in (out / "work").glob("*/job*/higgsCombine.gen.GenerateOnly.*.root")]
     assert len(seeds) == 6 and len(set(seeds)) == 6
     assert (out / "plots" / "bias_summary_default.png").exists()
-    # verdict of every point against the criterion, and the list of failing points
-    crit = res["bias_criterion"]
-    failing = {(f["generate"], f["fit"]) for f in res["failing_points"]}
+    # points above the bias threshold: flagged, listed and warned about, but not a failure
+    thr = res["bias_threshold"]
+    above = {(f["generate"], f["fit"]) for f in res["points_above_threshold"]}
     for point in res["points"]:
         for mode in ("envelope", "fixed"):
             s = point["summary"][mode]
-            assert s["within_criterion"] == (abs(s["bias_over_sigma"]) < crit)
-            assert ((point["generate"], mode) in failing) == (not s["within_criterion"])
-    assert f"## Verdict (|bias| < {crit} sigma)" in (out / "bias_summary.md").read_text()
+            assert s["above_threshold"] == (abs(s["bias_over_sigma"]) > thr)
+            assert ((point["generate"], mode) in above) == s["above_threshold"]
+            warned = f"WARNING (bias): {point['generate']} M{point['mass']} mu 1 {mode}:" in p.stdout
+            assert warned == s["above_threshold"]
+    assert f"## Points with |bias| > {thr} sigma (warnings)" in (out / "bias_summary.md").read_text()
 
 
 def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch):

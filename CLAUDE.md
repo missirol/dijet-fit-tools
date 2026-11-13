@@ -45,7 +45,8 @@
     of a given signal common to all of them.
   - Bias tests: toys with injected signal strengths per signal mass (e.g. mu = 0.5, 1, 5),
     fitted with background + signal; check that the fits return the injected mu on average.
-    Criterion |bias| < 0.5 sigma (bias = (<r> - mu) / std(r)).
+    bias = (<r> - mu) / std(r); |bias| > 0.5 is shown in the plots and reported with a warning,
+    but does not fail a bias test (agreed with the user).
 - Every fit needs a plot with a pull sub-pad, pull = (data - fit) / data_error.
 - Tests: run `pytest` (inside the environment) after changes; extend the unit tests and the
   closure test (tests/synthetic.py, tests/test_closure.py) together with new features.

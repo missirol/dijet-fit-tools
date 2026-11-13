@@ -135,6 +135,10 @@ uncertainty per bin.
 shows how the integral normalisation biases the fits, and compares the bin-sum normalisation
 with exact bin integration (see its README).
 
+`studies/category_optimisation/` compares category definitions in |Δy| and |Δφ| of the two jets
+by S/√B, from 2D histograms of the data and signal files (see its README); it is a study, not a
+step of the workflow.
+
 ### Signal fits
 
 Double-sided `RooCrystalBall` (common σ). The fit releases the parameters in stages
@@ -175,13 +179,13 @@ together (r common, background parameters uncorrelated):
 * `envelope`: the background function is profiled (discrete profiling), as in the analysis;
 * `fixed`: the background is the generating function (reference).
 
-The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N); the criterion is
-|bias| < 0.5 (`--bias-criterion`). Added in quadrature, a bias b increases the total uncertainty
-by √(1 + b²) − 1: 12% for b = 0.5, 1% for b = 0.14 (the stricter criterion of some analyses);
-a 68% interval shifted by b covers the true value in 62.5% (b = 0.5) or 67.8% (b = 0.14) of
-cases. Every point gets a verdict (`within_criterion`, a column of the tables), and
-`bias_summary.md` ends with the list of points that fail (`failing_points` in
-`bias_results.json`). The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
+The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N). A bias above 0.5 in
+absolute value (`--bias-threshold`) is shown in the summary plot (band), printed as a warning,
+flagged in the tables (`above_threshold`) and listed at the end of `bias_summary.md`
+(`points_above_threshold` in `bias_results.json`); it does not fail the bias test. For
+reference: added in quadrature, a bias b increases the total uncertainty by √(1 + b²) − 1, i.e.
+12% for b = 0.5 and 1% for b = 0.14 (a stricter threshold used in some analyses); a 68% interval
+shifted by b covers the true value in 62.5% (b = 0.5) or 67.8% (b = 0.14) of cases. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
 `--robustFit`). With `--pull-toys K`, the first K toys of each point (taken from as many jobs
 as needed) are also fitted with uncertainties (`--robustFit 1`, about a minute per toy) and the
 pulls (r_fit − μ)/σ_r are reported.
@@ -237,10 +241,11 @@ default 150-600 GeV, as in `run_all.sh`).
   `bias_test.py` runs end to end (two generators, several jobs: every fit counted in the
   Combine log, unique seeds, pull toys from several jobs, fixed-function fits close) and keeps
   going when a Combine job fails.
-* **Demo and setup tests** (`tests/test_demo.py`, `tests/test_setup.py`; marked `slow`): the
-  bin-normalisation demo runs and shows the expected biases; the setup scripts keep a ROOT
-  installation of the calling shell out of the environment (with a fake one that fails if
-  loaded).
+* **Demo, study and setup tests** (`tests/test_demo.py`, `tests/test_studies.py`,
+  `tests/test_setup.py`; marked `slow`): the bin-normalisation demo runs and shows the expected
+  biases; the category study runs on synthetic histograms (no scheme above the upper bound);
+  the setup scripts keep a ROOT installation of the calling shell out of the environment (with a
+  fake one that fails if loaded).
 * **Scan test** (also in `tests/test_closure.py`): a background with a turn-on just above the
   configured lower edge; `fit_background.py --scan` must raise the lower edge past it.
 
