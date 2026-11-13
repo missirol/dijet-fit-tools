@@ -73,9 +73,7 @@ def main():
     cats = args.categories or sorted(bkg["categories"])
     unknown = [c for c in cats if c not in bkg["categories"]]
     if unknown:
-        dropped = [c for c in unknown if c in bkg.get("dropped_categories", {})]
-        sys.exit(f"ERROR: categories not in {args.background}: {', '.join(unknown)}"
-                 + (f" (dropped in the background step: {', '.join(dropped)})" if dropped else ""))
+        sys.exit(f"ERROR: categories not in {args.background}: {', '.join(unknown)}")
     tfile = ROOT.TFile.Open(args.input)
     if not tfile or tfile.IsZombie():
         sys.exit(f"ERROR: cannot open {args.input}")

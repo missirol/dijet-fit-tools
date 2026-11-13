@@ -8,20 +8,24 @@ of the two jets, written to a RooWorkspace (format: [docs/OUTPUT_FORMAT.md](docs
 
 ROOT 6.36.14 (PyROOT, RooFit), numpy, and CMS Combine 11.1.0 (`RooMultiPdf` in step 5, the
 datacards and statistical tests in steps 6-7). `setup/install_env.sh [PREFIX]` creates such
-an environment from conda-forge (default `./env`, with micromamba in `./bin`). Then work in it
-in one of three ways (all commands in this README assume one of them):
+an environment from conda-forge (default `<repo>/env`, with micromamba in `<repo>/bin`; Linux
+x86-64; it can be run from any directory). Then work in it in one of three ways (all commands
+in this README assume one of them):
 
 | command | does |
 |---|---|
 | `setup/shell.sh [PREFIX]` | opens a new bash shell (reading your `~/.bashrc`) with the environment active; leave it with `exit` |
-| `source setup/activate.sh [PREFIX]` | activates the environment in the current bash or zsh shell |
+| `source setup/activate.sh` | activates the environment in the current bash or zsh shell (it takes no arguments; another environment: `DIJET_ENV=PREFIX source setup/activate.sh`) |
 | `setup/envrun.sh COMMAND ...` | runs one command in the environment, e.g. `setup/envrun.sh pytest` |
 
-A non-default environment can also be given with `DIJET_ENV=PREFIX`. All three first remove
+A non-default environment is given with `DIJET_ENV=PREFIX` (or as the argument of `shell.sh`).
+`activate.sh` changes the current shell: besides activating the environment it sets
+`MAMBA_ROOT_PREFIX` (if unset) and defines micromamba's shell function. All three first remove
 any other ROOT installation set up in the calling shell (e.g. by `thisroot.sh`): `ROOTSYS`,
 `PYTHONPATH`, `PYTHONHOME`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, `LD_PRELOAD`,
 `ROOT_INCLUDE_PATH`, `CPLUS_INCLUDE_PATH`, `C_INCLUDE_PATH`, `CLING_STANDARD_PCH`, and ROOT
-`bin` directories in `PATH` (list in `setup/_clean_env.sh`); a line says what was removed.
+`bin` directories in `PATH` (list in `setup/_clean_env.sh`); a line says what was removed
+(settings of the analysis environment itself, when it is already active, are not reported).
 Otherwise the environment's Python can load the other ROOT's libraries or bindings, and
 `import ROOT` crashes.
 
@@ -39,7 +43,7 @@ separately (see [Bias test](#bias-test-step-7)).
 | step | script | does | main outputs |
 |---|---|---|---|
 | 1 | `scripts/prepare_inputs.py` | collects the m_jj histograms of the categories selected by regular expressions (`--categories`, `--exclude`; the category name is the first capture group); data unchanged, signal scaled to σ = 1 nb: × `--lumi` (nb⁻¹, default 680000) / integral of `eventsProcessed` | `inputs.root` with `CAT/data_obs`, `CAT/ZprimeQQ_<MASS>` |
-| 2 | `scripts/fit_background.py` | fits candidate background functions to `data_obs` per category; selects the passing ones; with `--scan`, chooses the common fit range (and, if needed, per-category rebinning) | `background_fits.json`, `background_summary.md`, plots |
+| 2 | `scripts/fit_background.py` | fits candidate background functions to `data_obs` per category; selects the passing ones; with `--scan`, chooses the common fit range (per-category rebinning only for studies, with `--rebin-factors`; `--rebin CAT=N` fixes it without a scan) | `background_fits.json`, `background_summary.md`, plots |
 | 3 | `scripts/fit_signal.py` | fits each signal template with a double-sided Crystal Ball, in the same range/binning | `signal_fits.json`, `signal_summary.md`, plots |
 | 4 | `scripts/parametrize_signal.py` | interpolates the signal parameters and yield in the mass (spline by default, `--default-model polN` / `--model PARAM=polN` for polynomials) | `signal_parametrisation.json`, plots |
 | 5 | `scripts/build_workspace.py` | writes the workspace and checks that it reproduces the fit results | `workspace/dijet_workspace.root` (+ `.json` summary) |
@@ -102,7 +106,9 @@ parameters; it is kept so that every family of this form starts at 3 parameters.
 starting values come from a search over the parameters that enter non-linearly (the others
 solved exactly at each point) followed by a full Poisson fit (`dijetfit/background.py`). A fit is
 acceptable if it has status 0, covariance quality 3, no parameter at a limit and goodness-of-fit
-p > 0.05 (`--pvalue-threshold`); only acceptable fits are used. In each family, a sequence of
+p > 0.05 (`--pvalue-threshold`); only acceptable fits are used. A shape parameter that ends at
+its limit has its range re-centred and is fitted again (up to 3 times) before it counts as at
+its limit; the yield may vary between 0.5 and 1.5 times the events in the fit range. In each family, a sequence of
 standard Fisher F-tests fixes the highest order: starting from the lowest acceptable order, the
 next order is taken while it is significantly better (F-test p-value < 0.05,
 `--ftest-threshold`) and its fit is acceptable. The `RooMultiPdf` of the category contains:
@@ -139,7 +145,8 @@ exponential) is fixed and recorded in `signal_fits.json`. The templates are weig
 uncertainties; for the fit the weights are rescaled to a mean of 1 (and the yield scaled back),
 because Minuit's convergence criterion depends on the overall scale of the likelihood.
 `--weights counts` fits the MC counts instead (Poisson errors) and scales the yield back, which
-is equivalent for uniform weights. Two further modes exist for comparisons: `asymptotic`
+is equivalent for uniform weights; for templates with non-uniform weights it falls back to the
+default (the mode actually used is `weights_mode` of each fit in `signal_fits.json`). Two further modes exist for comparisons: `asymptotic`
 (RooFit's AsymptoticError; RooFit warns that it is not designed for binned data) and `none`
 (no error correction; uncertainties wrong by about 1/√w).
 
@@ -161,9 +168,9 @@ python3 scripts/bias_test.py output/datacards/datacards.json -o output/bias \
 For every signal mass and injected signal strength μ (× σ = 1 nb), Combine generates binned toys
 from the combined workspace (background: the default function of every category, with the
 parameters of the fit to data; `--generate altK` uses the K-th alternates instead, `--generate family-NAME`
-the highest order of family NAME in every category) and fits
-them with signal + background, all 11 categories together (r common, background parameters
-uncorrelated):
+the highest order of family NAME in every category; a category with fewer alternates, or
+without that family, uses its default) and fits them with signal + background, all categories
+together (r common, background parameters uncorrelated):
 
 * `envelope`: the background function is profiled (discrete profiling), as in the analysis;
 * `fixed`: the background is the generating function (reference).
@@ -172,7 +179,9 @@ The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N)
 |bias| < 0.5 (`--bias-criterion`). Added in quadrature, a bias b increases the total uncertainty
 by √(1 + b²) − 1: 12% for b = 0.5, 1% for b = 0.14 (the stricter criterion of some analyses);
 a 68% interval shifted by b covers the true value in 62.5% (b = 0.5) or 67.8% (b = 0.14) of
-cases. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
+cases. Every point gets a verdict (`within_criterion`, a column of the tables), and
+`bias_summary.md` ends with the list of points that fail (`failing_points` in
+`bias_results.json`). The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
 `--robustFit`). With `--pull-toys K`, the first K toys of each point (taken from as many jobs
 as needed) are also fitted with uncertainties (`--robustFit 1`, about a minute per toy) and the
 pulls (r_fit − μ)/σ_r are reported.
@@ -197,8 +206,8 @@ how many jobs were reused (`resumed`).
 Run inside the analysis environment, from the repository root:
 
 ```
-pytest                                   # everything, fit range 150-600 GeV (~1 min)
-pytest -m "not closure"                  # unit tests only (~10 s)
+pytest                                   # everything, fit range 150-600 GeV (~8 min)
+pytest -m "not closure and not slow"     # unit tests only (~1 min)
 pytest --fit-xmin 160 --fit-xmax 650     # another fit range (inside 100-800 GeV)
 ```
 
@@ -228,6 +237,10 @@ default 150-600 GeV, as in `run_all.sh`).
   `bias_test.py` runs end to end (two generators, several jobs: every fit counted in the
   Combine log, unique seeds, pull toys from several jobs, fixed-function fits close) and keeps
   going when a Combine job fails.
+* **Demo and setup tests** (`tests/test_demo.py`, `tests/test_setup.py`; marked `slow`): the
+  bin-normalisation demo runs and shows the expected biases; the setup scripts keep a ROOT
+  installation of the calling shell out of the environment (with a fake one that fails if
+  loaded).
 * **Scan test** (also in `tests/test_closure.py`): a background with a turn-on just above the
   configured lower edge; `fit_background.py --scan` must raise the lower edge past it.
 

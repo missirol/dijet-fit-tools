@@ -30,6 +30,7 @@ parameter is shared between them, except the signal mass `MH`.
 | `ZprimeQQ_CAT_norm` | `RooFormulaVar(MH)` | expected signal yield **inside the fit range** for σ(pp→Z'→qq) = **1 nb** and the luminosity given to `prepare_inputs.py` (default 680000 nb⁻¹) |
 | `bkg_CAT` | `RooMultiPdf` (Combine) | background model: discrete choice among the accepted functions |
 | `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default (index 0) = the F-test-selected family maximum with the largest goodness-of-fit p-value |
+| `<func>_c<i>_CAT` | `RooConstVar` | per-fit constants of the formula of background function `<func>` (decorrelation matrix, centres, reference mass; see below) |
 | `bkg_CAT_<func>` | `RooGenericPdf` | each accepted background function (e.g. `bkg_CAT_dijet5`) |
 | `<func>_p<k>_CAT` | `RooRealVar` | parameters of background function `<func>` (floating, set to the fitted values) |
 | `bkg_CAT_norm` | `RooRealVar` | background yield in the fit range (floating; set to the fitted value of the default function) |
@@ -42,8 +43,8 @@ Notes:
   of `eventsProcessed` in the signal file), i.e. to σ = 1 nb. A Combine signal strength `r`
   is therefore the cross section × branching fraction in nb.
 * **Signal parametrisation**: by default a natural cubic spline through the values fitted at the
-  mass points (polynomials can be chosen in `parametrize_signal.py`). Failed signal fits are not
-  used. Each parameter is interpolated only through the mass points where it was floating in
+  mass points (polynomials can be chosen in `parametrize_signal.py`). Every signal fit must pass
+  (otherwise the analysis case fails and no workspace is built). Each parameter is interpolated only through the mass points where it was floating in
   the fit (values fixed by the fitting procedure are not measurements), or through all points if
   fewer than two float; beyond its outermost points used, a parameter is held constant (e.g.
   `alphaR` when it was fixed at the highest mass because the right tail lies outside the fit
@@ -53,9 +54,9 @@ Notes:
   the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
   covered by every category, so no parameter is extrapolated.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
-  the families of the analysis note: `dijet`, `moddijet`, `ua2` (3–6 parameters), `modexp`,
-  `polypow` (3–5) and `polyext` (5–6); the number includes the normalisation (forms in the
-  README). The formulas are written in a numerically decorrelated parametrisation: the fitted
+  the families of the analysis note: `dijet`, `moddijet` (3–6 parameters), `ua2` (4–6 in the
+  note; `ua23` is an addition), `modexp`, `polypow` (3–5) and `polyext` (5–6); the number
+  includes the normalisation (forms in the README). The formulas are written in a numerically decorrelated parametrisation: the fitted
   parameters `<func>_p<k>_CAT` (the q) are related to the parameters p of the published form by
   p = p_start + M q (log-linear families: p = M q on centred terms), and have uncertainties of
   order 1 at the start. The per-fit constants of the formula (M, the centres p_start or t̄, the
@@ -64,7 +65,8 @@ Notes:
   formula. The parameters of the published form are in `background_fits.json`
   (`params_original`).
 * **Background functions in `bkg_CAT`** (at most 5): a fit is acceptable if it has status 0,
-  covariance quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05. In each
+  covariance quality 3, no parameter at a limit (after up to 3 re-centrings of its range) and
+  goodness-of-fit p-value > 0.05. In each
   family, standard Fisher F-tests (threshold 0.05), starting from the lowest acceptable order,
   give the highest order. The default is the family maximum with the largest p-value; up to 4
   alternates are the other acceptable functions of order at most their family's maximum,

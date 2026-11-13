@@ -6,7 +6,7 @@
 * Scan test: a background with a turn-on just above the configured lower edge; the background
   step with --scan must raise the lower edge past the turn-on.
 
-The workflow runs once per test module (a few tens of seconds); select or skip these tests with
+The workflow runs once per test module (a few minutes); select or skip these tests with
 `pytest -m closure` / `pytest -m "not closure"`. Pass `--basetemp DIR` to keep the outputs.
 """
 import json
@@ -234,6 +234,11 @@ def test_workspace_content(run, workspace):
                      f"pdfindex_{c}", f"mjj_{c}"):
             assert w.obj(name), name
         assert w.pdf(f"bkg_{c}").getNumPdfs() == len(run["bkg"]["categories"][c]["passing"])
+    # the functions that are not log-linear reach the workspace, with their constant arguments
+    nl = [(c, f) for c, v in run["bkg"]["categories"].items() for f in v["passing"] if not B.is_loglinear(f)]
+    assert nl, "no non-linear background function in any RooMultiPdf of the synthetic inputs"
+    for c, f in nl:
+        assert w.pdf(f"bkg_{c}_{f}") and w.obj(f"{f}_c0_{c}"), (c, f)
     # each parameter is interpolated through the masses where it was floating (if >= 2)
     for c, cd in run["param"]["categories"].items():
         for k, md in cd["models"].items():
@@ -445,7 +450,15 @@ def test_bias_test_script(run):
              for f in (out / "work").glob("*/job*/higgsCombine.gen.GenerateOnly.*.root")]
     assert len(seeds) == 6 and len(set(seeds)) == 6
     assert (out / "plots" / "bias_summary_default.png").exists()
-    assert (out / "bias_summary.md").exists()
+    # verdict of every point against the criterion, and the list of failing points
+    crit = res["bias_criterion"]
+    failing = {(f["generate"], f["fit"]) for f in res["failing_points"]}
+    for point in res["points"]:
+        for mode in ("envelope", "fixed"):
+            s = point["summary"][mode]
+            assert s["within_criterion"] == (abs(s["bias_over_sigma"]) < crit)
+            assert ((point["generate"], mode) in failing) == (not s["within_criterion"])
+    assert f"## Verdict (|bias| < {crit} sigma)" in (out / "bias_summary.md").read_text()
 
 
 def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch):
@@ -495,6 +508,25 @@ def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch
     BT.main()
     assert json.loads((tmp_path / "bias_results.json").read_text())["resumed"] == {"asimov": 1, "toys": 0}
     assert calls.count("GenerateOnly") == 2
+
+    # same arguments, but other Combine options: nothing is reused (the commands are part of the
+    # settings), not even the Asimov fit
+    calls.clear()
+    monkeypatch.setattr(BT.C, "DISCRETE_PROFILING_OPTIONS",
+                        BT.C.DISCRETE_PROFILING_OPTIONS + ["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
+    BT.main()
+    assert json.loads((tmp_path / "bias_results.json").read_text())["resumed"] == {"asimov": 0, "toys": 0}
+    assert calls.count("GenerateOnly") == 2 and calls.count("FitDiagnostics") == 1
+
+
+def test_bias_test_refuses_duplicate_values(run, tmp_path, monkeypatch):
+    """Duplicate values (e.g. --mu 1 1.0) would make two jobs share a directory."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--mu", "1", "1.0"])
+    with pytest.raises(SystemExit, match="duplicate values in --mu"):
+        BT.main()
 
 
 def test_make_datacards_detects_a_shape_mismatch(ROOT, run):
@@ -638,9 +670,6 @@ def test_a_category_without_a_passing_function_fails_the_case(run, tmp_path):
     out = json.loads((tmp_path / "a" / "background_fits.json").read_text())
     assert sorted(out["categories"]) == sorted(pvals) and "dropped_categories" not in out
     assert out["categories"][worst]["passing"] == []
-    p = script("fit_background.py", run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax,
-               "--functions", "dijet4", "--formats", "png", "-o", tmp_path / "b", "--drop-failing-categories")
-    assert p.returncode != 0 and "unrecognized arguments" in p.stderr  # the option no longer exists
 
 
 def test_signal_binning_must_match_data(ROOT, run, tmp_path):
@@ -678,6 +707,28 @@ def test_masses_near_the_upper_edge_are_dropped(run, tmp_path):
     assert p.returncode == 0, p.stderr[-2000:]
     out = json.loads((tmp_path / "sig" / "signal_fits.json").read_text())
     assert top in out["categories"][c]["dropped"] and top not in out["categories"][c]["masses"]
+
+
+def test_fit_signal_stops_on_a_failed_fit(run, tmp_path, monkeypatch):
+    """A signal fit that fails (here: one mass made to fail the quality check) makes
+    fit_signal.py write its outputs, with the fit flagged, and stop: the analysis case fails."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import fit_signal as FS
+    c = first_category()
+    masses = run["sig"]["categories"][c]["masses"] if "sig" in run else \
+        json.loads((run["out"] / "signal" / "signal_fits.json").read_text())["categories"][c]["masses"]
+    bad = masses[0]
+    real = FS.S.fit_ok
+    monkeypatch.setattr(FS.S, "fit_ok", lambda fit: real(fit) and fit["mass"] != bad)
+    monkeypatch.setattr(sys, "argv", ["fit_signal.py", str(run["out"] / "inputs.root"), "--background",
+                                      str(run["out"] / "background" / "background_fits.json"),
+                                      "-o", str(tmp_path), "--categories", c, "--formats", "png"])
+    with pytest.raises(SystemExit, match="the analysis case fails"):
+        FS.main()
+    out = json.loads((tmp_path / "signal_fits.json").read_text())
+    fits = out["categories"][c]["fits"]
+    assert fits[str(bad)]["usable"] is False
+    assert all(f["usable"] for m, f in fits.items() if m != str(bad))
 
 
 def test_a_failed_signal_fit_fails_the_case(run, tmp_path):

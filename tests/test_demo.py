@@ -6,7 +6,11 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from conftest import REPO
+
+pytestmark = pytest.mark.slow
 
 
 def test_bin_normalisation_demo(tmp_path):

@@ -31,7 +31,7 @@ from dijetfit import interp  # noqa: E402
 from dijetfit.common import (SIGNAL_PROCESS, category_labels, read_json, setup_root,  # noqa: E402
                              write_json)
 from dijetfit.histtools import window_hist  # noqa: E402
-from dijetfit.signal import ALL_PARAMS, RANGES  # noqa: E402
+from dijetfit.signal import ALL_PARAMS, RANGES, fit_ok  # noqa: E402
 
 # interpolated values are clamped to these ranges in the workspace (None = no limit)
 CLAMP = dict(mean=(None, None), sigma=(1.0, None), alphaL=RANGES["alpha"], alphaR=RANGES["alpha"],
@@ -222,7 +222,8 @@ def main():
     label = category_labels(fits["categories"])
     for cat, cd in sorted(fits["categories"].items()):
         fitted = sorted(int(m) for m in cd["fits"])
-        failed = [m for m in fitted if not cd["fits"][str(m)].get("usable", True)]
+        # re-checked here (not only the "usable" flag of fit_signal.py)
+        failed = [m for m in fitted if not (cd["fits"][str(m)].get("usable") and fit_ok(cd["fits"][str(m)]))]
         if failed:
             sys.exit(f"ERROR: {cat}: failed signal fits at {failed} GeV: the analysis case fails "
                      "(every signal fit must pass in every category)")

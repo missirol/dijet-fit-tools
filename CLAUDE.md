@@ -36,8 +36,9 @@
     limit (tail parameters that the procedure deliberately fixes at a limit do not count); every
     signal fit must pass (see "analysis case fails"). Signal p-values are a quality figure, not a cut.
   - Signal parameters vs mass: splines by default, polynomials via command line; each parameter
-    is interpolated only through the mass points where it was floating in the fit, and held
-    constant beyond the outermost such points.
+    is interpolated only through the mass points where it was floating in the fit (with fewer
+    than two such points: through all points; agreed with the user), and held constant beyond
+    the outermost points used.
   - Combine: one datacard per category, everything (data, background model, signal) taken from
     the workspace. All statistical tests use the combination of the 11 categories (exclusive
     data sets): background parameters uncorrelated across categories, only the signal strength

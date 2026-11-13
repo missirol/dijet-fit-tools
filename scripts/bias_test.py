@@ -32,8 +32,9 @@ The expected uncertainty sigma_r at each mass (Asimov data, mu = 1, envelope, --
 measured first; the range of r in the fits is mu +- R_RANGE_SIGMAS x sigma_r.
 
 Outputs (in --outdir):
-  bias_results.json     per point: settings, per-toy results, summary statistics
-  bias_summary.md       tables
+  bias_results.json     per point: settings, per-toy results, summary statistics (with
+                        `within_criterion`); `failing_points`: the points beyond the criterion
+  bias_summary.md       tables and the verdict
   plots/rfit_<gen>_<fit>_M<M>_mu<mu>.png   distribution of r_fit with a Gaussian fit
   plots/pull_<gen>_M<M>_mu<mu>.png         pull distributions (with --pull-toys)
   plots/bias_summary_<gen>.png             bias vs mass for all mu
@@ -42,7 +43,8 @@ Outputs (in --outdir):
 With --resume, an interrupted run is continued: rerun it with the same arguments and
 --resume. Every finished Combine job (and Asimov fit) leaves a marker file (done.json) with its
 settings; jobs whose marker matches the current settings (workspace, seed, toys, r range,
-generating functions, fits, pull toys) are not run again, everything else is.
+generating functions, fits, pull toys, and the exact Combine commands with all their options) and
+whose output files still exist are not run again, everything else is.
 """
 import argparse
 import itertools
@@ -132,6 +134,10 @@ class Runner:
             return None
         if done.get("settings") != json.loads(json.dumps(settings)):
             return None
+        files = [done["result"].get("log"), *done["result"].get("fits", {}).values(),
+                 done["result"].get("pull_file")]
+        if not all((d / f).exists() for f in files if f):  # outputs deleted since
+            return None
         with self._lock:
             self.reused[settings["kind"]] += 1
         return done["result"]
@@ -145,7 +151,12 @@ class Runner:
 
     def asimov_sigma(self, mass):
         d = self.work / f"asimov_M{mass}"
-        settings = self._settings(kind="asimov", mass=mass)
+        cmd = ["-M", "FitDiagnostics", self.ws, "-m", mass, "-t", "-1", "--expectSignal", 1,
+               "--toysNoSystematics", "--rMin", -20, "--rMax", 20, "--robustFit", 1,
+               "--skipBOnlyFit", *C.DISCRETE_PROFILING_OPTIONS, "-n", ".asimov"]
+        # the settings include the exact Combine commands, so that a job is reused only if it was
+        # run with the same options
+        settings = self._settings(kind="asimov", mass=mass, commands=[list(map(str, cmd))])
         done = self._reuse(d, settings)
         if done is not None:
             return done
@@ -153,9 +164,7 @@ class Runner:
         (d / "done.json").unlink(missing_ok=True)
         log = d / "combine.log"
         log.write_text("")
-        self.combine(["-M", "FitDiagnostics", self.ws, "-m", mass, "-t", "-1", "--expectSignal", 1,
-                      "--toysNoSystematics", "--rMin", -20, "--rMax", 20, "--robustFit", 1,
-                      "--skipBOnlyFit", *C.DISCRETE_PROFILING_OPTIONS, "-n", ".asimov"], d, log)
+        self.combine(cmd, d, log)
         m = re.findall(r"Best fit r: ([-0-9.eE+]+)\s+-([0-9.eE+]+)/\+([0-9.eE+]+)", log.read_text())
         if not m:
             raise RuntimeError(f"no Asimov fit result in {log}")
@@ -169,9 +178,24 @@ class Runner:
         d = self.work / f"{gen}_M{mass}_mu{fmt_mu(mu)}" / f"job{j}"
         gidx = gen_indices(self.meta, gen)
         setp = ",".join(f"{self.meta['categories'][c]['index']}={gidx[c]}" for c in self.cats)
+        common = [self.ws, "-m", mass, "--toysNoSystematics", "-s", seed]
+        toys = d / f"higgsCombine.gen.GenerateOnly.mH{mass}.{seed}.root"
+        fit = [*common, "--toysFile", toys.name, "--rMin", rrange[0], "--rMax", rrange[1],
+               *C.DISCRETE_PROFILING_OPTIONS]
+        cmds = [("gen", ["-M", "GenerateOnly", *common, "-t", ntoys, "--expectSignal", mu,
+                         "--saveToys", "--setParameters", setp, "-n", ".gen"])]
+        for mode in self.args.fits:
+            extra = ["--saveSpecifiedIndex", ",".join(self.idx_names)] if mode == "envelope" else \
+                ["--setParameters", setp, "--freezeParameters", ",".join(self.idx_names)]
+            cmds.append((mode, ["-M", "MultiDimFit", *fit, "-t", ntoys, "--algo", "none", *extra,
+                                "-n", f".{mode}"]))
+        if pull_toys:
+            cmds.append(("pull", ["-M", "FitDiagnostics", *fit, "-t", pull_toys, "--robustFit", 1,
+                                  "--skipBOnlyFit", "-n", ".pull"]))
         settings = self._settings(kind="toys", generate=gen, set_parameters=setp, mass=mass, mu=mu,
                                   job=j, ntoys=ntoys, seed=seed, r_range=list(rrange),
-                                  fits=list(self.args.fits), pull_toys=pull_toys)
+                                  fits=list(self.args.fits), pull_toys=pull_toys,
+                                  commands=[list(map(str, c)) for _, c in cmds])
         done = self._reuse(d, settings)
         if done is not None:
             return dict(done, log=d / done["log"], fits={k: d / v for k, v in done["fits"].items()},
@@ -180,23 +204,13 @@ class Runner:
         (d / "done.json").unlink(missing_ok=True)
         log = d / "combine.log"
         log.write_text("")
-        common = [self.ws, "-m", mass, "--toysNoSystematics", "-s", seed]
-        self.combine(["-M", "GenerateOnly", *common, "-t", ntoys, "--expectSignal", mu,
-                      "--saveToys", "--setParameters", setp, "-n", ".gen"], d, log)
-        toys = d / f"higgsCombine.gen.GenerateOnly.mH{mass}.{seed}.root"
-        fit = [*common, "--toysFile", toys.name, "--rMin", rrange[0], "--rMax", rrange[1],
-               *C.DISCRETE_PROFILING_OPTIONS]
         out = dict(seed=seed, ntoys=ntoys, fits={}, log=log)
-        for mode in self.args.fits:
-            extra = ["--saveSpecifiedIndex", ",".join(self.idx_names)] if mode == "envelope" else \
-                ["--setParameters", setp, "--freezeParameters", ",".join(self.idx_names)]
-            self.combine(["-M", "MultiDimFit", *fit, "-t", ntoys, "--algo", "none", *extra,
-                          "-n", f".{mode}"], d, log)
-            out["fits"][mode] = d / f"higgsCombine.{mode}.MultiDimFit.mH{mass}.{seed}.root"
-        if pull_toys:
-            self.combine(["-M", "FitDiagnostics", *fit, "-t", pull_toys, "--robustFit", 1,
-                          "--skipBOnlyFit", "-n", ".pull"], d, log)
-            out["pull_file"] = d / "fitDiagnostics.pull.root"
+        for what, cmd in cmds:
+            self.combine(cmd, d, log)
+            if what in self.args.fits:
+                out["fits"][what] = d / f"higgsCombine.{what}.MultiDimFit.mH{mass}.{seed}.root"
+            elif what == "pull":
+                out["pull_file"] = d / "fitDiagnostics.pull.root"
         self._finish(d, settings, dict(seed=seed, ntoys=ntoys, log=log.name,
                                        fits={k: v.name for k, v in out["fits"].items()},
                                        **({"pull_file": out["pull_file"].name} if pull_toys else {})))
@@ -303,7 +317,7 @@ def summary_plot(ROOT, path, points, masses, mus, fits, formats):
     c.SetLeftMargin(0.12)
     ext = [abs(s["bias_over_sigma"]) + s["bias_over_sigma_err"] for p in points.values()
            for f, s in p["summary"].items() if f in fits]
-    ymax = max([0.6] + [1.15 * e for e in ext])
+    ymax = max([0.6, 1.3 * BIAS_CRITERION] + [1.15 * e for e in ext])
     frame = c.DrawFrame(min(masses) - 40, -ymax, max(masses) + 40, 1.4 * ymax,
                         ";signal mass [GeV];(<r_{fit}> - #mu) / #sigma(r_{fit})")
     frame.GetYaxis().SetTitleOffset(1.3)
@@ -379,6 +393,10 @@ def main():
     args = ap.parse_args()
     BIAS_CRITERION = args.bias_criterion
 
+    for opt, vals in (("--mu", [round(v, 9) for v in args.mu]), ("--masses", args.masses or []),
+                      ("--generate", args.generate)):
+        if len(set(vals)) != len(vals):  # two jobs would share one directory and overwrite each other
+            sys.exit(f"ERROR: duplicate values in {opt}: {vals}")
     for g in args.generate:
         if g != "default" and not re.fullmatch(r"alt\d+|family-\w+", g):
             sys.exit(f"ERROR: unknown generator '{g}' (use 'default', 'altK' or 'family-NAME')")
@@ -403,11 +421,24 @@ def main():
     pull_mu = args.pull_mu if args.pull_mu is not None else args.mu
 
     print(f"Expected uncertainty on r (Asimov, mu = 1, envelope) at {masses} ...", flush=True)
+    asimov, failed_jobs = {}, []
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        asimov = dict(zip(masses, ex.map(runner.asimov_sigma, masses)))
+        futs = {ex.submit(runner.asimov_sigma, m): m for m in masses}
+        for fut in as_completed(futs):
+            m = futs[fut]
+            try:  # a failing Asimov fit: that mass is left out (listed in failed_jobs), the run goes on
+                asimov[m] = fut.result()
+            except Exception as e:  # noqa: BLE001
+                failed_jobs.append(dict(generate="asimov", mass=m, mu=1.0, job=-1, ntoys=0, seed=-1,
+                                        error=str(e)[-2000:]))
+                print(f"  WARNING: Asimov fit at M{m} failed, mass left out: {str(e)[-300:]}", flush=True)
     for m in masses:
-        a = asimov[m]
-        print(f"  M{m}: r = {a['r']:.4f} -{a['err_lo']:.4f}/+{a['err_hi']:.4f}")
+        if m in asimov:
+            a = asimov[m]
+            print(f"  M{m}: r = {a['r']:.4f} -{a['err_lo']:.4f}/+{a['err_hi']:.4f}")
+    masses = [m for m in masses if m in asimov]
+    if not masses:
+        sys.exit("ERROR: all Asimov fits failed")
 
     # ---- toys
     tasks = []
@@ -428,7 +459,7 @@ def main():
     print(f"\n{len(tasks)} Combine jobs ({args.ntoys} toys per point, {len(args.generate)} "
           f"generator(s) x {len(masses)} masses x {len(args.mu)} signal strengths), "
           f"{args.jobs} in parallel", flush=True)
-    results, failed_jobs = {}, []
+    results = {}
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
         futs = {ex.submit(runner.job, *t): t for t in tasks}
         for k, fut in enumerate(as_completed(futs), 1):
@@ -453,7 +484,7 @@ def main():
                    generate=args.generate, fits=args.fits, bias_criterion=BIAS_CRITERION,
                    r_range_sigmas=R_RANGE_SIGMAS, discrete_profiling_options=C.DISCRETE_PROFILING_OPTIONS,
                    categories=runner.cats, asimov=asimov, failed_jobs=failed_jobs, points=[])
-    md = ["# Bias test of the signal strength (11 categories combined)\n",
+    md = [f"# Bias test of the signal strength ({len(runner.cats)} categories combined)\n",
           f"Toys generated by Combine from the combined workspace ({args.ntoys} per point); "
           "bias = (mean r_fit - mu) / std(r_fit) over the toys, uncertainty 1/sqrt(N). "
           f"Criterion |bias| < {BIAS_CRITERION} sigma.\n",
@@ -464,15 +495,17 @@ def main():
     if failed_jobs:
         md += ["", f"**{len(failed_jobs)} Combine job(s) failed** (their toys count as failed; "
                "details in bias_results.json, `failed_jobs`)."]
+    failing = []
     for gen in args.generate:
         gidx = gen_indices(meta, gen)
         pts = {}
         md += ["", f"## Generating functions: {gen}\n",
                ", ".join(f"{c}: {meta['categories'][c]['index_to_function'][str(gidx[c])]}"
                          for c in runner.cats) + "\n",
-               "| M | mu | fit | toys ok | failed | at r boundary | mean r_fit | std r_fit | "
-               "bias / sigma | median bias / sigma | envelope: same function as generated |",
-               "|" + "---|" * 11]
+               f"| M | mu | fit | toys ok | failed | at r boundary | mean r_fit | std r_fit | "
+               f"bias / sigma | median bias / sigma | envelope: same function as generated | "
+               f"|bias| < {BIAS_CRITERION} |",
+               "|" + "---|" * 12]
         for m, mu in itertools.product(masses, args.mu):
             jobs = sorted(results.get((gen, m, mu), []), key=lambda x: x[0][3])
             half = R_RANGE_SIGMAS * asimov[m]["sigma"]
@@ -514,6 +547,12 @@ def main():
                 if same:
                     s["fraction_same_function"] = float(np.mean(same))
                     s["chosen_functions"] = chosen
+                # verdict: |bias| below the criterion (in units of the spread of r_fit)
+                s["within_criterion"] = bool(np.isfinite(s["bias_over_sigma"])
+                                             and abs(s["bias_over_sigma"]) < BIAS_CRITERION)
+                if not s["within_criterion"]:
+                    failing.append(dict(generate=gen, mass=m, mu=mu, fit=mode,
+                                        bias_over_sigma=s["bias_over_sigma"]))
                 point["summary"][mode] = s
                 tag = f"{gen}_{mode}_M{m}_mu{fmt_mu(mu)}"
                 gauss_plot(ROOT, outdir / "plots" / f"rfit_{tag}",
@@ -525,7 +564,8 @@ def main():
                           f"{s['n_at_boundary']} | {s['mean']:.4f} | {s['std']:.4f} | "
                           f"{s['bias_over_sigma']:+.3f} ± {s['bias_over_sigma_err']:.3f} | "
                           f"{s['median_bias_over_sigma']:+.3f} | "
-                          + (f"{100 * s['fraction_same_function']:.0f}%" if same else "-") + " |")
+                          + (f"{100 * s['fraction_same_function']:.0f}%" if same else "-") + " | "
+                          + ("yes" if s["within_criterion"] else "**NO**") + " |")
             pulls = []
             for t, res in jobs:
                 for toy, rec in res.get("pull", {}).items():
@@ -556,6 +596,15 @@ def main():
                               f"{s['mean']:+.3f} ± {s['mean_err']:.3f} | {s['std']:.3f} ± {s['std_err']:.3f} |")
         summary_plot(ROOT, outdir / "plots" / f"bias_summary_{gen}", pts, masses, args.mu,
                      args.fits, args.formats)
+    payload["failing_points"] = failing
+    md += ["", f"## Verdict (|bias| < {BIAS_CRITERION} sigma)\n"]
+    if failing:
+        md += [f"**{len(failing)} point(s) fail the criterion:**\n",
+               "| generator | M | mu | fit | bias / sigma |", "|---|---|---|---|---|"]
+        md += [f"| {f['generate']} | {f['mass']} | {f['mu']:g} | {f['fit']} | {f['bias_over_sigma']:+.3f} |"
+               for f in failing]
+    else:
+        md.append("All points pass.")
     write_json(outdir / "bias_results.json", payload)
     (outdir / "bias_summary.md").write_text("\n".join(md) + "\n")
     print("\n".join(md))

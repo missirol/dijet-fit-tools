@@ -10,9 +10,9 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 MICROMAMBA = os.environ.get("MAMBA_EXE") or shutil.which("micromamba")
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.slow, pytest.mark.skipif(
     not MICROMAMBA or not (Path(sys.prefix) / "conda-meta").is_dir(),
-    reason="needs micromamba and a conda environment")
+    reason="needs micromamba and a conda environment")]
 CHECK = ("import os, ROOT; print('VERSION', ROOT.gROOT.GetVersion()); print('FILE', ROOT.__file__); "
          "print('PYTHONPATH', os.environ.get('PYTHONPATH'))")
 
@@ -86,3 +86,46 @@ def test_shell_reads_bashrc_then_activates(other_root, tmp_path):
     res = parse(p.stdout)
     assert res["FROMRC"] == "yes"
     assert res["FILE"].startswith(sys.prefix) and res["PYTHONPATH"] == "None"
+
+
+def test_activate_ignores_the_callers_arguments_and_uses_dijet_env(other_root, tmp_path):
+    """A sourced script sees the caller's positional parameters: activate.sh takes no arguments
+    (regression: they were taken as the environment path). DIJET_ENV selects the environment."""
+    _, env = other_root
+    script = f"source {REPO}/setup/activate.sh || exit 7\necho PREFIX $CONDA_PREFIX\n"
+    p = subprocess.run(["bash", "-c", script, "caller", "not-an-environment"], env=env,
+                       capture_output=True, text=True, cwd=tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert parse(p.stdout)["PREFIX"] == sys.prefix
+
+
+def test_activate_fails_cleanly_without_an_environment(other_root, tmp_path):
+    _, env = other_root
+    env = dict(env, DIJET_ENV=str(tmp_path / "nothing"))
+    p = subprocess.run(["bash", "-c", f"source {REPO}/setup/activate.sh; echo RC $?"], env=env,
+                       capture_output=True, text=True, cwd=tmp_path)
+    assert parse(p.stdout)["RC"] != "0" and "no conda environment" in p.stderr
+
+
+def test_envrun_in_an_active_environment_reports_nothing(other_root, tmp_path):
+    """Inside an activated shell the environment's own ROOTSYS and bin/ are not reported as
+    'another ROOT installation'."""
+    _, env = other_root
+    env = {k: v for k, v in env.items() if k not in ("ROOTSYS", "PYTHONPATH", "LD_LIBRARY_PATH",
+                                                       "ROOT_INCLUDE_PATH")}
+    env["PATH"] = ":".join(d for d in env["PATH"].split(":") if "otherroot" not in d)
+    script = (f"source {REPO}/setup/activate.sh 2>/dev/null || exit 7\n"
+              f"{REPO}/setup/envrun.sh python -c 'print(1)'\n")
+    p = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, cwd=tmp_path)
+    assert p.returncode == 0, p.stderr
+    assert "removed from the environment" not in p.stderr, p.stderr
+
+
+def test_shell_warns_if_the_environment_cannot_be_activated(other_root, tmp_path):
+    _, env = other_root
+    home = tmp_path / "home"
+    home.mkdir()
+    env = dict(env, HOME=str(home))
+    p = subprocess.run([str(REPO / "setup" / "shell.sh"), str(tmp_path / "nothing")], env=env,
+                       capture_output=True, text=True, input="exit\n", cwd=tmp_path)
+    assert "NOT active" in p.stderr

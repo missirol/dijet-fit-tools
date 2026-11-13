@@ -10,12 +10,15 @@ DIJET_CLEAN_VARS="ROOTSYS PYTHONPATH PYTHONHOME LD_LIBRARY_PATH DYLD_LIBRARY_PAT
 ROOT_INCLUDE_PATH CPLUS_INCLUDE_PATH C_INCLUDE_PATH CLING_STANDARD_PCH"
 
 # Remove the variables above, and from PATH every ROOT bin directory ($ROOTSYS/bin, or any
-# directory that contains thisroot.sh). Prints one line listing what was removed (to stderr).
+# directory that contains thisroot.sh). Prints one line listing what was removed (to stderr);
+# settings of the analysis environment itself (DIJET_PREFIX, e.g. its own ROOTSYS and bin/ when
+# it is already active) are removed too (activation sets them again) but not reported.
 _dijet_clean_env() {
-  local removed="" v d newpath="" rootbin=""
+  local removed="" v d val newpath="" rootbin="" own="${DIJET_PREFIX:-}"
   if [ -n "${ROOTSYS:-}" ]; then rootbin="${ROOTSYS%/}/bin"; fi
   for v in $(echo "$DIJET_CLEAN_VARS"); do
-    if [ -n "$(eval "echo \"\${$v:-}\"")" ]; then
+    val="$(eval "echo \"\${$v:-}\"")"
+    if [ -n "$val" ] && { [ -z "$own" ] || [ "${val#"$own"}" = "$val" ]; }; then
       removed="$removed $v"
     fi
     unset "$v"
@@ -23,7 +26,9 @@ _dijet_clean_env() {
   local IFS=":"
   for d in $(echo "${PATH:-}"); do
     if [ -n "$d" ] && { [ "${d%/}" = "$rootbin" ] || [ -f "$d/thisroot.sh" ]; }; then
-      removed="$removed PATH:$d"
+      if [ -z "$own" ] || [ "${d#"$own"}" = "$d" ]; then
+        removed="$removed PATH:$d"
+      fi
       continue
     fi
     newpath="${newpath:+$newpath:}$d"

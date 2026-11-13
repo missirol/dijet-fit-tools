@@ -319,7 +319,7 @@ def step_fit(args):
                     cells.append(f"{b.mean():+.3f} ± {b.std(ddof=1) / math.sqrt(len(b)):.3f}" if len(b) > 1
                                  else f"{b.mean():+.3f}")
                 md.append(f"| {mass} | {mu:g} | {truth['toys']} toys (mean) | " + " | ".join(cells) + " |")
-    md += ["", "Per-bin predictions minus the yield in the extended term (Asimov, mu = first value, "
+    md += ["", "Per-bin predictions minus the yield in the extended term (Asimov, mu = last value, "
            "category 0):", "", "| M | " + " | ".join(f"{m} bkg / sig" for m in MODELS) + " |",
            "|---|" + "---|" * len(MODELS)]
     for mass in truth["masses"]:

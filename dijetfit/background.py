@@ -411,8 +411,8 @@ def start_values_nonlinear(name, hist):
     found = []
     for _dev, t, _u in chosen:
         u, d = _nelder_mead(prof, np.arcsinh(np.asarray(t) / scale))
-        if np.isfinite(d):
-            found.append((d, tuple(np.sinh(u) * scale)))
+        if np.isfinite(d):  # map back exactly as prof() did (clipped), so solve(t) is the cached point
+            found.append((d, tuple(np.sinh(np.clip(u, -40, 40)) * scale)))
     found.sort(key=lambda z: z[0])
     results = []
     for d, t in found[:FINAL_STARTS]:

@@ -1,6 +1,10 @@
 # Activate the analysis environment in the current shell (bash or zsh). Source it, once per shell:
 #
-#   source setup/activate.sh [PREFIX]      (PREFIX: default $DIJET_ENV, else <repo>/env)
+#   source setup/activate.sh                       (environment <repo>/env)
+#   DIJET_ENV=PREFIX source setup/activate.sh      (another environment)
+#
+# It takes no arguments: a sourced script sees the positional parameters of the caller (e.g. of
+# a script that sources it), which must not be mistaken for an environment path.
 #
 # It first removes the variables through which another ROOT installation set up in this shell
 # (ROOTSYS, PYTHONPATH, LD_LIBRARY_PATH, ...; see setup/_clean_env.sh) would leak into the
@@ -26,7 +30,7 @@ _dijet_repo="$(cd "$(dirname "$_dijet_here")/.." && pwd)"
 . "$_dijet_repo/setup/_clean_env.sh"
 
 _dijet_activate() {
-  _dijet_locate "$_dijet_repo" "$@" || return 1
+  _dijet_locate "$_dijet_repo" || return 1
   # leave a previously activated environment first (e.g. when sourced twice)
   if [ -n "${CONDA_PREFIX:-}" ] && command -v micromamba >/dev/null 2>&1; then
     micromamba deactivate >/dev/null 2>&1 || true
@@ -44,7 +48,7 @@ _dijet_activate() {
   echo "dijet setup: environment $DIJET_PREFIX active (ROOT $version)" >&2
 }
 
-_dijet_activate "$@"
+_dijet_activate
 _dijet_status=$?
 unset -f _dijet_activate
 unset _dijet_here _dijet_shell _dijet_repo

@@ -8,7 +8,8 @@ in the fit range [XMIN, XMAX] (extended binned maximum likelihood). A fit is acc
   - the goodness-of-fit p-value (Poisson likelihood-ratio chi2) exceeds --pvalue-threshold.
 The functions of the category's RooMultiPdf are chosen with standard Fisher F-tests (see
 dijetfit/background.py, select_functions):
-  - in every family (dijet, moddijet, ua2), starting from the lowest acceptable order, move to
+  - in every family (dijet, moddijet, ua2, modexp, polypow, polyext; see dijetfit/background.py),
+    starting from the lowest acceptable order, move to
     the next order while it is significantly better (F-test p-value < --ftest-threshold) and
     its fit is acceptable: this gives the family's highest order; the family contributes its
     acceptable orders up to that one;
