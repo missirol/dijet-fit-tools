@@ -10,7 +10,8 @@
 #   LUMI      integrated luminosity in nb^-1           (default: 680000)
 #   XMIN      lower edge of the fit range [GeV]        (default: 150; scanned upwards if needed)
 #   XMAX      upper edge of the fit range [GeV]        (default: 600)
-#   SCAN_MAX  largest lower edge tried [GeV]           (default: 250)
+#   SCAN_MAX  largest lower edge allowed [GeV]         (default: 200; if a category still has no
+#             passing background function there, the analysis case fails)
 #   REBIN_FACTORS  space-separated rebin factors for the scan (default: none = no rebinning;
 #             build_workspace.py refuses rebinned categories, so this is only for studies)
 #   SCAN_MAX_UNBINNED  with REBIN_FACTORS: largest lower edge tried before rebinning [GeV]
@@ -21,8 +22,6 @@
 #             (default: the |dY| slices L1SCaloJet_Std_Mjj150dPhi1p0dY<A>to<B>_J1J2_mass)
 #   EXCLUDE   space-separated regular expressions of histograms to leave out
 #             (default: the inclusive slice 0p0to1p1; EXCLUDE="" excludes nothing)
-#   DROP_FAILING_CATEGORIES  set to 1 to leave out categories without a passing background
-#             function instead of stopping (default: stop)
 #   FORMATS   plot formats                             (default: "png pdf")
 set -euo pipefail
 
@@ -35,17 +34,14 @@ OUT="${OUT:-output}"
 LUMI="${LUMI:-680000}"
 XMIN="${XMIN:-150}"
 XMAX="${XMAX:-600}"
-SCAN_MAX="${SCAN_MAX:-250}"
+SCAN_MAX="${SCAN_MAX:-200}"
 REBIN_FACTORS="${REBIN_FACTORS:-}"
 SCAN_MAX_UNBINNED="${SCAN_MAX_UNBINNED:-190}"
 CATEGORIES="${CATEGORIES:-(L1SCaloJet_Std_Mjj150dPhi1p0dY\d+p\d+to\d+p\d+)_J1J2_mass}"
 EXCLUDE="${EXCLUDE-L1SCaloJet_Std_Mjj150dPhi1p0dY0p0to1p1_J1J2_mass}"
-DROP_FAILING_CATEGORIES="${DROP_FAILING_CATEGORIES:-0}"
 FORMATS="${FORMATS:-png pdf}"
 read -r -a CATEGORY_ARGS <<< "$CATEGORIES"
 read -r -a EXCLUDE_ARGS <<< "$EXCLUDE"
-DROP_ARGS=()
-[ "$DROP_FAILING_CATEGORIES" = 1 ] && DROP_ARGS=(--drop-failing-categories)
 REBIN_ARGS=()
 if [ -n "$REBIN_FACTORS" ]; then
   read -r -a FACTORS <<< "$REBIN_FACTORS"
@@ -59,7 +55,7 @@ python3 "$HERE/scripts/prepare_inputs.py" --data "$DATA" --signal "$@" --lumi "$
   --categories "${CATEGORY_ARGS[@]}" --exclude ${EXCLUDE_ARGS[@]+"${EXCLUDE_ARGS[@]}"} -o "$OUT/inputs.root" | tee "$OUT/1_prepare_inputs.log"
 python3 "$HERE/scripts/fit_background.py" "$OUT/inputs.root" -o "$OUT/background" \
   --xmin "$XMIN" --xmax "$XMAX" --scan --scan-max "$SCAN_MAX" ${REBIN_ARGS[@]+"${REBIN_ARGS[@]}"} \
-  ${DROP_ARGS[@]+"${DROP_ARGS[@]}"} --formats $FORMATS | tee "$OUT/2_fit_background.log"
+  --formats $FORMATS | tee "$OUT/2_fit_background.log"
 python3 "$HERE/scripts/fit_signal.py" "$OUT/inputs.root" \
   --background "$OUT/background/background_fits.json" -o "$OUT/signal" \
   --formats $FORMATS | tee "$OUT/3_fit_signal.log"

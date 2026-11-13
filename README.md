@@ -63,9 +63,10 @@ All later steps work on whatever categories `inputs.root` contains.
 
 The fit range is the same for all categories and is always given on the command line
 (`--xmin/--xmax`); the scripts have no built-in range. The analysis defaults live in
-`run_all.sh` (150–600 GeV, scan up to a lower edge of 250 GeV), overridable with environment
-variables. With `--scan` the lower edge is raised in 5 GeV steps (up to `--scan-max`) until
-every category has at least one passing function. Every step is logged.
+`run_all.sh` (150–600 GeV, scan up to a lower edge of 200 GeV, the highest allowed),
+overridable with environment variables. With `--scan` the lower edge is raised in 5 GeV steps
+(up to `--scan-max`) until every category has at least one passing function. Every step is
+logged.
 
 Rebinning is switched off by default: `build_workspace.py` refuses categories with bins wider
 than 1 GeV, because the fits integrate the pdfs over such bins while Combine evaluates them at
@@ -74,17 +75,32 @@ For studies it can be switched on with `REBIN_FACTORS` (`--rebin-factors`, e.g. 
 failing categories are then rebinned at `SCAN_MAX_UNBINNED` (default 190 GeV) with the smallest
 factor that works, before the lower edge is raised further.
 
-A category without any passing function stops the workflow, unless `DROP_FAILING_CATEGORIES=1`
-(`fit_background.py --drop-failing-categories`) is set: it is then left out and listed in
-`background_fits.json`, and the scan keeps the lowest lower edge with the most passing
-categories, so that such a category does not raise the lower edge of the others. Signal mass points closer than
+**An analysis case fails** (the workflow stops with an error) if a category still has no
+passing background function at the highest allowed lower edge (`SCAN_MAX`, 200 GeV), or if any
+signal fit fails in any category. Categories are never dropped: all categories of a case must
+work, otherwise a different categorisation is needed. Signal mass points closer than
 10 GeV to either edge of the fit range (or outside it) are dropped (with the defaults, M200 is
 dropped above 190 GeV).
 
 ### Background functions and selection
 
-Families `dijet` (CMS standard dijet function), `moddijet` ((1−x^{1/3}) variant) and `ua2`,
-with 3, 4, 5, 6 parameters (incl. normalisation; `--functions` selects others). A fit is
+The function families of the analysis note's background table, with x = m_jj/√s and the
+number of parameters including the normalisation p0 (`--functions` selects a subset):
+
+| family | parameters | form |
+|---|---|---|
+| `dijet` | 3–6 | p0 (1−x)^p1 / x^(p2 + p3 ln x + p4 ln²x + p5 ln³x) |
+| `moddijet` | 3–6 | p0 (1−x^{1/3})^p1 / x^(p2 + p3 ln x + p4 ln²x + p5 ln³x) |
+| `ua2` | 3–6 | p0 x^−p1 exp(−(p2 x + p3 x² + p4 x³ + p5 x⁴)) |
+| `modexp` | 3–5 | p0 exp(p1 x^p2); p0 exp(p1 x^p2 + p1 (1−x)^p3); p0 exp(p1 x^p2 + p3 (1−x)^p4) |
+| `polypow` | 3–5 | p0 (1 + p1 x + p2 x² + p3 x³)^−p_last |
+| `polyext` | 5–6 | p0 (1−x)^p1 (1 + p4 x + p5 x²) x^−(p2 + p3 ln x) |
+
+`ua23` (x^−p1 exp(−p2 x)) is not in the note's table, whose `ua2` family starts at 4
+parameters; it is kept so that every family of this form starts at 3 parameters. The
+`modexp`, `polypow` and `polyext` functions are not log-linear in their parameters: their
+starting values come from a search over the parameters that enter non-linearly (the others
+solved exactly at each point) followed by a full Poisson fit (`dijetfit/background.py`). A fit is
 acceptable if it has status 0, covariance quality 3, no parameter at a limit and goodness-of-fit
 p > 0.05 (`--pvalue-threshold`); only acceptable fits are used. In each family, a sequence of
 standard Fisher F-tests fixes the highest order: starting from the lowest acceptable order, the
@@ -128,8 +144,9 @@ is equivalent for uniform weights. Two further modes exist for comparisons: `asy
 (no error correction; uncertainties wrong by about 1/√w).
 
 A signal fit is *failed* if it has status != 0, covariance quality != 3 or a parameter at its
-limit (after the fixing rules); failed fits are kept in `signal_fits.json` but not used for
-the parametrisation. The goodness-of-fit p-value is reported as a quality figure and does not
+limit (after the fixing rules). Every signal fit must pass in every category: a failed fit is
+recorded in `signal_fits.json` (`usable: false`) and the workflow stops (the analysis case
+fails). The goodness-of-fit p-value is reported as a quality figure and does not
 reject fits. In the parametrisation, each parameter is interpolated only through the mass points
 where it was floating in the fit (values fixed by the procedure are not measurements), or
 through all points if fewer than two of them float.
@@ -151,8 +168,11 @@ uncorrelated):
 * `envelope`: the background function is profiled (discrete profiling), as in the analysis;
 * `fixed`: the background is the generating function (reference).
 
-The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N); a common criterion is
-|bias| < 0.14. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
+The bias is (⟨r_fit⟩ − μ) / std(r_fit) over the toys (uncertainty 1/√N); the criterion is
+|bias| < 0.5 (`--bias-criterion`). Added in quadrature, a bias b increases the total uncertainty
+by √(1 + b²) − 1: 12% for b = 0.5, 1% for b = 0.14 (the stricter criterion of some analyses);
+a 68% interval shifted by b covers the true value in 62.5% (b = 0.5) or 67.8% (b = 0.14) of
+cases. The expected uncertainty σ_r at each mass is measured first (Asimov, μ = 1,
 `--robustFit`). With `--pull-toys K`, the first K toys of each point (taken from as many jobs
 as needed) are also fitted with uncertainties (`--robustFit 1`, about a minute per toy) and the
 pulls (r_fit − μ)/σ_r are reported.

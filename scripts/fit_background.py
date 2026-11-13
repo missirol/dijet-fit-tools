@@ -30,11 +30,9 @@ raised without rebinning only up to --scan-max-unbinned; there, the failing cate
 rebinned with the smallest factor that works; beyond, at every new lower edge each category
 starts again from no rebinning. --rebin fixes the rebinning of given categories without a scan.
 
-If a category has no passing function, the script stops with an error, unless
---drop-failing-categories is given: such categories are then left out of the output (and of all
-later steps) and listed, with the reason, under "dropped_categories" in background_fits.json.
-With --scan, the lower edge is then the lowest one with the most passing categories, so that a
-category that never passes does not raise the lower edge of the others.
+If a category has no passing function (with --scan: still at --scan-max), the script writes
+its outputs for inspection and stops with an error: every category of an analysis case needs at
+least one passing function; categories are never dropped (a different categorisation is needed).
 Rebinning merges consecutive bins starting from XMIN (the last bin may be narrower).
 Every decision is logged in the output JSON and in the summary.
 
@@ -126,8 +124,6 @@ def main():
     ap.add_argument("--scan-max", type=float, help="largest XMIN tried at all (required with --scan) [GeV]")
     ap.add_argument("--rebin-factors", type=int, nargs="*", default=[],
                     help="with --scan: rebin factors to try (default: none, i.e. no rebinning)")
-    ap.add_argument("--drop-failing-categories", action="store_true",
-                    help="leave out categories without a passing function instead of stopping")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = ap.parse_args()
 
@@ -206,7 +202,7 @@ def main():
 
         xmin, rebin, results, failing = scan_fit_range(
             evaluate, cats, args.xmin, args.scan_step, args.scan_max_unbinned, args.scan_max,
-            args.rebin_factors, log, drop_failing=args.drop_failing_categories)
+            args.rebin_factors, log)
         if failing:
             log(f"WARNING: no acceptable configuration found up to xmin = {xmin:g} GeV; "
                 f"failing categories: {', '.join(failing)}")
@@ -225,8 +221,7 @@ def main():
                    function_definitions={f: B.describe(f) for f in args.functions},
                    pdf_normalisation="sum over the bin centres (1 GeV bins); integral, adaptive Gauss-Kronrod "
                                      "(rebinned categories, pdf integrated over the bins)",
-                   integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={},
-                   dropped_categories={})
+                   integrator_eps_rel=B.INTEGRATOR_EPS_REL, scan_log=scan_log, categories={})
     md = ["# Background fits\n", f"Fit range: [{xmin:g}, {args.xmax:g}] GeV  ",
           f"Acceptable fit: status 0, covQual 3, no parameter at limit, p > {pthr:g}. Per family, "
           f"F-tests (threshold {args.ftest_threshold:g}) from the lowest acceptable order give the "
@@ -259,12 +254,7 @@ def main():
             rebin=rebin[c], bin_edges=edges, binning=binning_label(edges),
             n_data=h.Integral(), passing=passing, default=default["name"] if default else None,
             fits={f["name"]: public(f) for f in fits})
-        if not passing and args.drop_failing_categories:
-            entry["reason"] = "no passing background function"
-            payload["dropped_categories"][c] = entry
-            print(f"WARNING: category {c} has no passing background function: dropped", file=sys.stderr)
-        else:
-            payload["categories"][c] = entry
+        payload["categories"][c] = entry
         md += [f"## {c}\n", f"Binning: {binning_label(edges)}"
                + (f" (**rebinned by {rebin[c]}**)" if rebin[c] != 1 else "") + "  ",
                f"RooMultiPdf: {', '.join(passing) or 'NONE'} (default: {default['name'] if default else '-'})\n",
@@ -287,11 +277,11 @@ def main():
     ne = sum(f["n_errors"] for c in cats for f in results[c][1])
     print(f"\nRooFit/Minuit messages in the final fits: {nw} warnings, {ne} errors")
     print(f"Written {outdir / 'background_fits.json'}, {outdir / 'background_summary.md'}")
-    if not payload["categories"]:
-        sys.exit("ERROR: no category has a passing background function")
-    if any(not results[c][2] for c in cats) and not args.drop_failing_categories:
-        sys.exit("ERROR: some categories have no passing background function "
-                 "(use --drop-failing-categories to leave them out)")
+    failing = [c for c in cats if not results[c][2]]
+    if failing:
+        sys.exit(f"ERROR: {len(failing)} categor{'y has' if len(failing) == 1 else 'ies have'} no passing "
+                 f"background function ({', '.join(failing)}): the analysis case fails (every category "
+                 "needs one; categories are not dropped, a different categorisation is needed)")
 
 
 if __name__ == "__main__":

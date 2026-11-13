@@ -17,8 +17,11 @@ Best fits only (MultiDimFit --algo none); the functions chosen by the envelope a
 
 The bias is measured by the mean of (r_fit - mu) in units of the standard deviation of r_fit
 over the toys (the actual statistical uncertainty, including the effect of the envelope). Its
-uncertainty is 1/sqrt(N toys). A common criterion is |bias| < 0.14 sigma, i.e. a bias that
-would increase the total uncertainty by less than 1% if added in quadrature.
+uncertainty is 1/sqrt(N toys). The criterion is |bias| < --bias-criterion (default 0.5 sigma).
+For reference: a bias b (in units of sigma) added in quadrature increases the total uncertainty
+by sqrt(1 + b^2) - 1, i.e. 1% for b = 0.14 (the stricter criterion used in some analyses) and
+12% for b = 0.5; a Gaussian 68% interval shifted by b covers the true value with probability
+68.3% (b = 0), 67.8% (0.14), 62.5% (0.5).
 
 With --pull-toys K, the first K toys of each point are also fitted with uncertainties
 (FitDiagnostics --robustFit 1, envelope; ~1 minute per toy): pull = (r_fit - mu) / sigma, with
@@ -60,7 +63,7 @@ from dijetfit.common import read_json, setup_root, write_json  # noqa: E402
 from dijetfit.plotting import fit_plot  # noqa: E402
 
 R_RANGE_SIGMAS = 20.0
-BIAS_CRITERION = 0.14
+BIAS_CRITERION = 0.5  # default of --bias-criterion
 
 
 def fmt_mu(mu):
@@ -295,7 +298,7 @@ def gauss_plot(ROOT, path, values, title, xtitle, labels, formats, center=None, 
 
 
 def summary_plot(ROOT, path, points, masses, mus, fits, formats):
-    """bias / sigma vs mass, one graph per (mu, fit), with the +-0.14 band."""
+    """bias / sigma vs mass, one graph per (mu, fit), with the +- BIAS_CRITERION band."""
     c = ROOT.TCanvas("c_sum", "", 900, 600)
     c.SetLeftMargin(0.12)
     ext = [abs(s["bias_over_sigma"]) + s["bias_over_sigma_err"] for p in points.values()
@@ -342,6 +345,7 @@ def summary_plot(ROOT, path, points, masses, mus, fits, formats):
 
 
 def main():
+    global BIAS_CRITERION
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("datacards", help="datacards.json from make_datacards.py")
@@ -366,11 +370,14 @@ def main():
     ap.add_argument("--pull-mu", nargs="*", type=float,
                     help="signal strengths for which the pulls are computed (default: all)")
     ap.add_argument("--seed", type=int, default=1000)
+    ap.add_argument("--bias-criterion", type=float, default=BIAS_CRITERION,
+                    help=f"criterion on |bias| in units of sigma (default: {BIAS_CRITERION})")
     ap.add_argument("--resume", action="store_true",
                     help="continue an interrupted run (same arguments): reuse the finished "
                          "Combine jobs in OUTDIR/work whose settings match")
     ap.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = ap.parse_args()
+    BIAS_CRITERION = args.bias_criterion
 
     for g in args.generate:
         if g != "default" and not re.fullmatch(r"alt\d+|family-\w+", g):

@@ -161,6 +161,8 @@ def main():
                     v.setError(pr["error"])
                     arglist.add(v)
                     keep.append(v)
+                # per-fit constants of the formula (decorrelation matrix, centres, M0)
+                keep += B.add_constants(ROOT, arglist, fr.get("constants"), f"{func}_c", c)
                 # normalised by the sum over the bin centres, as in the fits (see B.make_pdf)
                 pdf = B.make_pdf(ROOT, f"bkg_{c}_{func}", func, arglist, fr["formula"], nbins)
                 pdfs.add(pdf)

@@ -10,8 +10,9 @@ and scales the yield back instead.
 
 A fit is *failed* if it has status != 0, a covariance matrix that is not full and accurate
 (covQual != 3), or a floating parameter at its limit (after the fixing rules of
-dijetfit/signal.py). Failed fits are kept in the outputs (flag "usable": false) but are not used
-for the signal parametrisation. The goodness of fit is reported as a quality figure and does
+dijetfit/signal.py). Every signal fit must pass in every category: the outputs are written (a
+failed fit has the flag "usable": false) and the script then stops with an error, i.e. the
+analysis case fails. The goodness of fit is reported as a quality figure and does
 not reject fits: the p-value of the Poisson likelihood-ratio chi2 on the equivalent MC counts
 for uniformly weighted templates (the normal case), of a Neyman chi2 with the bin errors
 otherwise.
@@ -126,16 +127,18 @@ def main():
                       f"{fit['pvalue']:.3g} | {fit['n_warnings']}/{fit['n_errors']} | "
                       f"{','.join(fit['params_at_limit']) or '-'} | "
                       + " | ".join(f"{P[k]['value']:.4g}" for k in S.ALL_PARAMS) + " |")
-            flag = "" if ok else "   <-- FAILED: not used for the parametrisation"
+            flag = "" if ok else "   <-- FAILED"
             print(f"{c} M{m}: status {fit['status']} covQual {fit['cov_qual']} "
                   f"chi2/ndf {fit['chi2']:.1f}/{fit['ndf']} warn/err {fit['n_warnings']}/"
                   f"{fit['n_errors']} at-limit {fit['params_at_limit'] or '-'}{flag}", flush=True)
         md.append("")
     write_json(outdir / "signal_fits.json", payload)
     (outdir / "signal_summary.md").write_text("\n".join(md) + "\n")
-    print(f"\n{nbad} failed fit(s) (status != 0, covQual != 3 or a parameter at its limit): "
-          "not used for the parametrisation")
+    print(f"\n{nbad} failed fit(s) (status != 0, covQual != 3 or a parameter at its limit)")
     print(f"Written {outdir / 'signal_fits.json'}, {outdir / 'signal_summary.md'}")
+    if nbad:
+        sys.exit(f"ERROR: {nbad} signal fit(s) failed: the analysis case fails (every signal fit must "
+                 "pass in every category; see signal_summary.md)")
 
 
 if __name__ == "__main__":

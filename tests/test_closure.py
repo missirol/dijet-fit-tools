@@ -91,6 +91,7 @@ def expected_counts_of_fit(ROOT, fit, edges, tag):
         v = ROOT.RooRealVar(f"q{k}_{tag}", "", fit["params"][f"p{k}"]["value"])
         al.add(v)
         keep.append(v)
+    keep += B.add_constants(ROOT, al, fit.get("constants"), "c", tag)  # the per-fit constants
     lo, hi = np.array(edges[:-1]), np.array(edges[1:])
     pdf = B.make_pdf(ROOT, f"pdf_{tag}", fit["name"], al, fit["formula"], B.bin_sum_nbins(lo, hi))
     return B.expected_counts(ROOT, x, pdf, fit["norm"]["value"], lo, hi, B.needs_bin_integration(lo, hi))
@@ -112,7 +113,15 @@ def test_background_closure(ROOT, run):
     sel = (e[:-1] >= xmin - 1e-9) & (e[1:] <= xmax + 1e-9)
     for cat in syn.CATEGORIES:
         cb = run["bkg"]["categories"][cat_name(cat)]
-        assert all(f["n_errors"] == 0 and f["status"] == 0 for f in cb["fits"].values())
+        # the log-linear families (dijet4 generates the data) always converge; a non-linear function
+        # that does not (it may sit in an almost flat valley on these data) must be failed by the
+        # selection and not be used
+        bad = {n: (f["status"], f["n_errors"], f["messages"][:2]) for n, f in cb["fits"].items()
+               if B.is_loglinear(n) and not (f["n_errors"] == 0 and f["status"] == 0)}
+        assert not bad, (cat, bad)
+        for n, f in cb["fits"].items():
+            if not B.fit_quality_ok(f):
+                assert f["verdict"].startswith("fail") and n not in cb["passing"], (cat, n, f["verdict"])
         assert cb["passing"], cat
         gen = cb["fits"]["dijet4"]
         assert not gen["verdict"].startswith("fail"), (cat, gen["verdict"])
@@ -614,24 +623,24 @@ def test_workspace_refuses_bins_wider_than_1gev(run, tmp_path):
     assert not (tmp_path / "w.root").exists()
 
 
-def test_drop_failing_categories(run, tmp_path):
-    """With a goodness-of-fit threshold that one category cannot meet, fit_background.py stops;
-    with --drop-failing-categories it leaves that category out and lists it."""
+def test_a_category_without_a_passing_function_fails_the_case(run, tmp_path):
+    """With a goodness-of-fit threshold that one category cannot meet, fit_background.py writes
+    its outputs and stops with an error naming that category: an analysis case needs a passing
+    function in every category (categories are never dropped)."""
     xmin, xmax = run["fit_range"]
     pvals = {c: v["fits"]["dijet4"]["pvalue"] for c, v in run["bkg"]["categories"].items()}
     worst = min(pvals, key=pvals.get)
     others = sorted(v for c, v in pvals.items() if c != worst)
     thr = 0.5 * (pvals[worst] + others[0])
-    args = [run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax, "--functions", "dijet4",
-            "--pvalue-threshold", thr, "--formats", "png"]
-    p = script("fit_background.py", *args, "-o", tmp_path / "a")
-    assert p.returncode != 0 and "drop-failing-categories" in p.stderr
-    p = script("fit_background.py", *args, "-o", tmp_path / "b", "--drop-failing-categories")
-    assert p.returncode == 0, p.stderr[-2000:]
-    out = json.loads((tmp_path / "b" / "background_fits.json").read_text())
-    assert list(out["dropped_categories"]) == [worst]
-    assert out["dropped_categories"][worst]["reason"] == "no passing background function"
-    assert sorted(out["categories"]) == sorted(c for c in pvals if c != worst)
+    p = script("fit_background.py", run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax,
+               "--functions", "dijet4", "--pvalue-threshold", thr, "--formats", "png", "-o", tmp_path / "a")
+    assert p.returncode != 0 and "the analysis case fails" in p.stderr and worst in p.stderr
+    out = json.loads((tmp_path / "a" / "background_fits.json").read_text())
+    assert sorted(out["categories"]) == sorted(pvals) and "dropped_categories" not in out
+    assert out["categories"][worst]["passing"] == []
+    p = script("fit_background.py", run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax,
+               "--functions", "dijet4", "--formats", "png", "-o", tmp_path / "b", "--drop-failing-categories")
+    assert p.returncode != 0 and "unrecognized arguments" in p.stderr  # the option no longer exists
 
 
 def test_signal_binning_must_match_data(ROOT, run, tmp_path):
@@ -671,21 +680,17 @@ def test_masses_near_the_upper_edge_are_dropped(run, tmp_path):
     assert top in out["categories"][c]["dropped"] and top not in out["categories"][c]["masses"]
 
 
-def test_failed_signal_fits_are_not_parametrised(run, tmp_path):
-    """A signal fit flagged as failed is left out of the parametrisation and listed."""
+def test_a_failed_signal_fit_fails_the_case(run, tmp_path):
+    """A signal fit flagged as failed stops the parametrisation: every signal fit must pass in
+    every category of an analysis case."""
     sig = json.loads((run["out"] / "signal" / "signal_fits.json").read_text())
     c = first_category()
     masses = sig["categories"][c]["masses"]
-    if len(masses) < 3:
-        pytest.skip("needs at least three signal masses")
-    bad = masses[1]
+    bad = masses[len(masses) // 2]
     assert all(f["usable"] for f in sig["categories"][c]["fits"].values())
     sig["categories"][c]["fits"][str(bad)]["usable"] = False
     (tmp_path / "sig.json").write_text(json.dumps(sig))
     p = script("parametrize_signal.py", tmp_path / "sig.json", "--input", run["out"] / "inputs.root",
                "-o", tmp_path / "param", "--formats", "png")
-    assert p.returncode == 0, p.stderr[-2000:]
-    par = json.loads((tmp_path / "param" / "signal_parametrisation.json").read_text())
-    assert par["categories"][c]["excluded_masses"] == [bad]
-    assert bad not in par["categories"][c]["masses"]
-    assert bad not in par["categories"][c]["models"]["norm"]["points"]["masses"]
+    assert p.returncode != 0
+    assert "the analysis case fails" in p.stderr and c in p.stderr and str(bad) in p.stderr

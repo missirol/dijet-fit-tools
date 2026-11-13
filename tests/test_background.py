@@ -37,9 +37,14 @@ def test_function_names_and_parsing():
     assert B.function_names(["ua2"], orders=(3, 4)) == ["ua23", "ua24"]
     assert B.parse_function("ua25") == ("ua2", 5)
     assert B.terms_of("dijet4") == ["ln1mx", "L1", "L2"]
-    for bad in ("dijet2", "dijet7", "expo3"):
+    for bad in ("dijet2", "dijet7", "expo3", "modexp6", "polypow6", "polyext4", "ua22"):
         with pytest.raises(ValueError):
             B.parse_function(bad)
+    # the families of the analysis note, with their orders
+    assert B.function_names(["modexp", "polypow", "polyext"]) == [
+        "modexp3", "modexp4", "modexp5", "polypow3", "polypow4", "polypow5", "polyext5", "polyext6"]
+    assert len(B.function_names()) == 20 and B.parse_function("polyext6") == ("polyext", 6)
+    assert B.is_loglinear("ua23") and not B.is_loglinear("modexp4") and B.terms_of("polypow4") == []
 
 
 def test_reference_mass_is_geometric_mean():  # pure arithmetic, independent of the configured range
@@ -302,3 +307,98 @@ def test_selection_with_a_missing_order_and_a_failed_fit():
     assert default == "dijet3"
     assert v["dijet5"].startswith("not used: the dijet4 fit is missing")
     assert v["ua23"] == "fail: the fit raised an exception"
+
+
+# ---- all families: shared formula, the families that are not log-linear --------------------------
+# typical parameters of the non-linear functions: fits to a category of the real data (150-600 GeV)
+NL_TRUTH = {
+    "modexp3": (-54.82, 0.1767), "modexp4": (26.81, -0.09235, 2.417),
+    "modexp5": (-551.18, 1.55835, 9.79123, 93.05),
+    "polypow3": (259.0, 5.816), "polypow4": (1831.0, 2.995e4, 3.967), "polypow5": (578.9, -5784.0, 9.629e4, 5.687),
+    "polyext5": (-61.11, 9.102, 0.4708, -19.07), "polyext6": (-152.7, 13.78, 0.9088, -38.62, 380.6),
+}
+
+
+def _nl_truth(fit_range, name):
+    """NL_TRUTH, or skip if it is not a valid falling spectrum over the configured fit range."""
+    p = np.array(NL_TRUTH[name])
+    m = np.linspace(*fit_range, 50)
+    lf = B.nonlinear_log_f(name, m / B.SQRTS, p)
+    if not np.all(np.isfinite(lf)) or not np.all(np.diff(lf) < 0):
+        pytest.skip(f"{name}: the typical parameters are not valid over the fit range {fit_range}")
+    return p
+
+
+def test_formula_with_constants_matches_numpy_for_every_function(ROOT, fit_range):
+    """The RooFit formula of the decorrelated parametrisation (per-fit constants as arguments)
+    describes the same function as numpy, for every function of every family."""
+    XMIN, XMAX = fit_range
+    rng = np.random.default_rng(3)
+    m0 = B.reference_mass(XMIN, XMAX)
+    x = ROOT.RooRealVar("x_all", "", XMIN, XMAX)
+    for name in B.function_names():
+        k = B.parse_function(name)[1] - 1
+        M = np.eye(k) + 0.01 * rng.normal(size=(k, k))
+        q = 0.1 * rng.normal(size=k)
+        if B.is_loglinear(name):
+            centre = rng.normal(size=k)
+            T = B.term_defs(m0)
+            lnf = lambda m: sum(q[j] * sum(M[i, j] * (T[t][0](m) - centre[i])  # noqa: E731
+                                           for i, t in enumerate(B.terms_of(name))) for j in range(k))
+        else:
+            centre = np.array(NL_TRUTH[name])
+            lnf = lambda m: B.nonlinear_log_f(name, m / B.SQRTS, centre + M @ q)  # noqa: E731
+        formula, consts = B.formula_and_constants(name, k, m0, M, centre)
+        al = ROOT.RooArgList(x)
+        keep = [ROOT.RooRealVar(f"q{j}_{name}", "", v) for j, v in enumerate(q)]
+        for v in keep:
+            al.add(v)
+        keep += B.add_constants(ROOT, al, consts, "c", name)
+        fv = ROOT.RooFormulaVar(f"fv_{name}", formula, al)
+        ms = np.linspace(XMIN, XMAX, 6)[1:-1]
+        ref = np.array([lnf(np.array([m]))[0] for m in ms])
+        got = []
+        for m in ms:
+            x.setVal(m)
+            got.append(np.log(fv.getVal()))
+        # ratios between masses (the normalisation is free)
+        assert np.array(got) - got[0] == pytest.approx(ref - ref[0], abs=1e-8), name
+
+
+def test_fits_of_a_function_share_one_compiled_formula(ROOT, fit_range):
+    """The formula string does not depend on the data or the fit range (the per-fit constants
+    are arguments), so ROOT compiles it once per function."""
+    XMIN, XMAX = fit_range
+    h1 = asimov(ROOT, fit_range, name="share1")
+    h2 = asimov(ROOT, (XMIN + 10.0, XMAX), name="share2")
+    for name in ("dijet5", "polyext5"):
+        r1 = B.fit_function(ROOT, name, h1, f"share1_{name}")
+        r2 = B.fit_function(ROOT, name, h2, f"share2_{name}")
+        assert r1["formula"] == r2["formula"]
+        assert r1["constants"] != r2["constants"]
+
+
+# At these typical parameters the likelihood of modexp4 and polypow4 has an almost flat, curved
+# direction (e.g. (1 + p1 x + p2 x^2)^-p3 for large p1, p2); Minuit's covariance matrix may then be
+# forced positive-definite (covQual 2), and such a fit fails the covQual 3 requirement of the
+# selection, as for any function.
+NEARLY_FLAT = {"modexp4", "polypow4"}
+
+
+@pytest.mark.parametrize("name", B.function_names(["modexp", "polypow", "polyext"]))
+def test_nonlinear_fit_recovers_its_own_asimov(ROOT, fit_range, name):
+    """Asimov histogram (bin-centre expectation) of a non-linear function: the start search and
+    the RooFit fit reproduce it exactly (covQual 3, except for NEARLY_FLAT: at least 2)."""
+    XMIN, XMAX = fit_range
+    p = _nl_truth(fit_range, name)
+    edges = np.arange(XMIN, XMAX + 0.5, 1.0)
+    c = 0.5 * (edges[:-1] + edges[1:])
+    f = np.exp(B.nonlinear_log_f(name, c / B.SQRTS, p))
+    h = make_th1(ROOT, f"asimov_nl_{name}", edges, N_EVENTS * f / f.sum())
+    p_start, mu = B.start_values_nonlinear(name, h)
+    assert B.baker_cousins(B.hist_arrays(h)[2], mu) < 1e-3
+    r = B.fit_function(ROOT, name, h, f"t_nl_{name}")
+    assert r["status"] == 0 and not r["params_at_limit"], r["messages"]
+    assert r["cov_qual"] == 3 or (name in NEARLY_FLAT and r["cov_qual"] == 2), r["cov_qual"]
+    assert r["chi2"] < 1e-2 and r["pvalue"] > 0.99
+    assert np.array(r["expected"]) == pytest.approx(B.hist_arrays(h)[2], rel=1e-4)

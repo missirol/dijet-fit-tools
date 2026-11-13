@@ -53,11 +53,16 @@ Notes:
   the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
   covered by every category, so no parameter is extrapolated.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
-  the families `dijet`, `moddijet` and `ua2` with 3–6 parameters (the number includes the
-  normalisation). The formulas are written in a numerically decorrelated basis: the fitted
-  parameters `<func>_p<k>_CAT` are linear combinations of the parameters of the published form,
-  and have uncertainties of order 1. The function family is unchanged; the coefficients of the
-  published form are in `background_fits.json` (`params_original`).
+  the families of the analysis note: `dijet`, `moddijet`, `ua2` (3–6 parameters), `modexp`,
+  `polypow` (3–5) and `polyext` (5–6); the number includes the normalisation (forms in the
+  README). The formulas are written in a numerically decorrelated parametrisation: the fitted
+  parameters `<func>_p<k>_CAT` (the q) are related to the parameters p of the published form by
+  p = p_start + M q (log-linear families: p = M q on centred terms), and have uncertainties of
+  order 1 at the start. The per-fit constants of the formula (M, the centres p_start or t̄, the
+  reference mass) are `RooConstVar` arguments `<func>_c<i>_CAT` of the pdf (listed in
+  `background_fits.json`, `constants`), so that all fits of a function share one compiled
+  formula. The parameters of the published form are in `background_fits.json`
+  (`params_original`).
 * **Background functions in `bkg_CAT`** (at most 5): a fit is acceptable if it has status 0,
   covariance quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05. In each
   family, standard Fisher F-tests (threshold 0.05), starting from the lowest acceptable order,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Step 4: parametrise the signal shape and yield as a function of the resonance mass.
 
-Only usable signal fits enter (failed fits, see fit_signal.py, are left out and listed). For
+All signal fits must be usable (see fit_signal.py): a failed fit stops the script. For
 every category, each Crystal Ball parameter (mean, sigma, alphaL, nL, alphaR, nR) and
 the yield inside the fit range (norm, for 1 nb) is interpolated in the mass with a natural
 cubic spline (default) or a polynomial of order N ('polN'), chosen with --default-model
@@ -222,12 +222,13 @@ def main():
     label = category_labels(fits["categories"])
     for cat, cd in sorted(fits["categories"].items()):
         fitted = sorted(int(m) for m in cd["fits"])
-        masses = [m for m in fitted if cd["fits"][str(m)].get("usable", True)]
-        excluded = [m for m in fitted if m not in masses]
-        if excluded:
-            print(f"{cat}: failed signal fits at {excluded} GeV are not used", file=sys.stderr)
+        failed = [m for m in fitted if not cd["fits"][str(m)].get("usable", True)]
+        if failed:
+            sys.exit(f"ERROR: {cat}: failed signal fits at {failed} GeV: the analysis case fails "
+                     "(every signal fit must pass in every category)")
+        masses = fitted
         if len(masses) < 2:
-            sys.exit(f"ERROR: {cat}: fewer than 2 usable signal fits")
+            sys.exit(f"ERROR: {cat}: fewer than 2 signal masses in the fit range")
         models = {}
         for k in ALL_PARAMS:
             vals = [cd["fits"][str(m)]["params"][k]["value"] for m in masses]
@@ -256,7 +257,7 @@ def main():
             templates[m] = window_hist(ROOT, raw, xmin, xmax, cd["rebin"], name=f"{cat}_{m}_t")
         model_plot(ROOT, str(outdir / "plots" / f"model_{cat}"), args.formats, cat, models,
                    templates, xmin, xmax)
-        payload["categories"][cat] = dict(masses=masses, excluded_masses=excluded, rebin=cd["rebin"],
+        payload["categories"][cat] = dict(masses=masses, rebin=cd["rebin"],
                                           models=models)
         print(f"{cat}: masses {masses}, models: "
               + ", ".join(f"{k}={choice[k]}" for k in ALL_PARAMS))
