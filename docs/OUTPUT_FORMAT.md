@@ -140,3 +140,12 @@ Fits with the `RooMultiPdf` use the options recommended for discrete profiling
 --X-rtd MINIMIZER_multiMin_hideConstants --X-rtd MINIMIZER_multiMin_maskConstraints
 --X-rtd MINIMIZER_multiMin_maskChannels=2`. Uncertainties on `r` need `--robustFit 1`: the
 default Hesse/Minos errors are wrong with the envelope (the index changes during the error scan).
+
+## Expected limits (step 7)
+
+`scripts/expected_limits.py` runs `combine -M AsymptoticLimits --run blind` on
+`datacard_combined.root` with the options above, one job per mass (`-m`), and writes
+`limits/limits.json`: `masses`, `quantiles` (`"0.025"`, `"0.16"`, `"0.5"`, `"0.84"`, `"0.975"`),
+`limits` (per mass: `expected` = {quantile: upper limit on r}, Combine's exit code `rc`, `log`),
+`failed_masses`, and the inputs used (`datacards`, `workspace`, `categories`, `fit_range`, `method`,
+`options`). The limits are on r, i.e. on the cross section in units of 1 nb.

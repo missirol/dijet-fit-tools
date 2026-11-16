@@ -35,10 +35,10 @@ Otherwise the environment's Python can load the other ROOT's libraries or bindin
 ./run_all.sh DATA.root ZprimeToQQ_M200_*.root ZprimeToQQ_M300_*.root ...
 ```
 
-runs steps 1-6 below (outputs in `output/`, logs `output/<N>_<step>.log`). Each step is
+runs steps 1-7 below (outputs in `output/`, logs `output/<N>_<step>.log`). Each step is
 a separate script with `--help`; every step reads only the outputs of the previous ones, so
-any step can be re-run on its own. The bias test (step 7) is CPU-intensive and is run
-separately (see [Bias test](#bias-test-step-7)).
+any step can be re-run on its own. The bias test (step 8) is CPU-intensive and is run
+separately (see [Bias test](#bias-test-step-8)).
 
 | step | script | does | main outputs |
 |---|---|---|---|
@@ -48,7 +48,8 @@ separately (see [Bias test](#bias-test-step-7)).
 | 4 | `scripts/parametrize_signal.py` | interpolates the signal parameters and yield in the mass (spline by default, `--default-model polN` / `--model PARAM=polN` for polynomials) | `signal_parametrisation.json`, plots |
 | 5 | `scripts/build_workspace.py` | writes the workspace and checks that it reproduces the fit results | `workspace/dijet_workspace.root` (+ `.json` summary) |
 | 6 | `scripts/make_datacards.py` | one Combine datacard per category (everything taken from the workspace), their combination, and `text2workspace.py`; checks the expected yields and the normalised shapes of the combined workspace against the source workspace | `datacards/datacard_CAT.txt`, `datacard_combined.{txt,root}`, `datacards.json` |
-| 7 | `scripts/bias_test.py` | bias test of the signal strength with Combine toys, all categories combined | `bias/bias_results.json`, `bias_summary.md`, plots |
+| 7 | `scripts/expected_limits.py` | expected 95% CL upper limits on r (asymptotic CLs, blind, envelope), all categories combined, every `LIMIT_STEP` GeV (default 25) | `limits/limits.json`, `limits_summary.md`, `expected_limits.png` |
+| 8 | `scripts/bias_test.py` | bias test of the signal strength with Combine toys, all categories combined | `bias/bias_results.json`, `bias_summary.md`, plots |
 
 Every fit produces a plot with the distribution, the fit and a pull sub-pad,
 (data − fit)/σ_data. RooFit/Minuit warnings and errors are counted per fit and reported in
@@ -70,7 +71,12 @@ The fit range is the same for all categories and is always given on the command 
 `run_all.sh` (150–600 GeV, scan up to a lower edge of 200 GeV, the highest allowed),
 overridable with environment variables. With `--scan` the lower edge is raised in 5 GeV steps
 (up to `--scan-max`) until every category has at least one passing function. Every step is
-logged.
+logged. Nothing in the code depends on the value of the lower edge (the background functions
+are written in m/√s and a reference mass from the fit range, the signal masses kept follow from
+the range): any XMIN works, provided the data are filled from there. `fit_background.py` stops
+with an error if a category has no data in the first bin of the fit range, which happens when
+XMIN is below a cut on m_jj applied to the input histograms (e.g. histograms of events with
+m_jj > 170 GeV fitted from 150 GeV).
 
 Rebinning is switched off by default: `build_workspace.py` refuses categories with bins wider
 than 1 GeV, because the fits integrate the pdfs over such bins while Combine evaluates them at
@@ -162,7 +168,25 @@ reject fits. In the parametrisation, each parameter is interpolated only through
 where it was floating in the fit (values fixed by the procedure are not measurements), or
 through all points if fewer than two of them float.
 
-## Bias test (step 7)
+## Expected limits (step 7)
+
+```
+python3 scripts/expected_limits.py output/datacards/datacards.json -o output/limits \
+  [--step 25 | --masses 200 250 300] [--jobs N]
+```
+
+For every mass of the grid (every `--step` GeV over the signal mass range of the workspace, the
+highest mass always included; masses between the signal mass points use the interpolated signal
+model), Combine computes the expected 95% CL upper limit on r (× σ = 1 nb) with the asymptotic CLs
+method (`-M AsymptoticLimits --run blind`): the Asimov data set of the background-only hypothesis,
+built from the background model of the workspace (the fit to data), without looking at the data.
+The background function is profiled (discrete profiling options). `limits.json` stores the
+quantiles 0.025, 0.16, 0.5, 0.84 and 0.975 per mass; `limits_summary.md` has the table and
+`expected_limits.png` the median with the 68% and 95% bands. A mass point fails if Combine fails
+or does not return all five quantiles (positive and ordered): it is listed in `failed_masses`
+and the script (and `run_all.sh`) exits with an error after writing its outputs.
+
+## Bias test (step 8)
 
 ```
 python3 scripts/bias_test.py output/datacards/datacards.json -o output/bias \
@@ -211,7 +235,7 @@ how many jobs were reused (`resumed`).
 Run inside the analysis environment, from the repository root:
 
 ```
-pytest                                   # everything, fit range 150-600 GeV (~8 min)
+pytest                                   # everything, fit range 150-600 GeV (~11 min)
 pytest -m "not closure and not slow"     # unit tests only (~1 min)
 pytest --fit-xmin 160 --fit-xmax 650     # another fit range (inside 100-800 GeV)
 ```
@@ -233,12 +257,16 @@ default 150-600 GeV, as in `run_all.sh`).
   category selection, the fit range (must stay as configured), the fit of the generating
   background function, the signal fits (likelihood ratio against the truth), the interpolated
   signal model at 350 GeV, the workspace content, one plot per fit, and the Combine steps
-  (below).
+  (below). A modified input with empty bins at the lower edge must be refused by
+  `fit_background.py`.
 * **Combine tests** (also in `tests/test_closure.py`): the datacards of step 6; a Combine fit
   to its own Asimov data set (generating background function) returns the injected signal
   strength within 2% of its uncertainty, for no signal and 3σ (regression test for the
   normalisation of the background pdfs: with the old normalisation it was off by 1.2σ); `-m`
-  sets the mass; the shape check of `make_datacards.py` catches a modified parameter;
+  sets the mass; the shape check of `make_datacards.py` catches a modified parameter; the
+  expected limits of step 7 exist at every mass of the grid, with ordered quantiles, the median
+  agrees with 1.96 σ_r (asymptotic CLs, σ_r from a `--robustFit` Asimov fit, within −15%/+20%),
+  and a failing Combine job is reported;
   `bias_test.py` runs end to end (two generators, several jobs: every fit counted in the
   Combine log, unique seeds, pull toys from several jobs, fixed-function fits close) and keeps
   going when a Combine job fails.

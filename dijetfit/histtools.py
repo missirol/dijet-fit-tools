@@ -27,6 +27,22 @@ def bin_edges_in_window(hist, xmin, xmax, rebin=1):
     return out
 
 
+def first_filled_edge(hist, xmin, xmax):
+    """Lower edge of the first non-empty bin of `hist` in [xmin, xmax] (None if all are empty).
+    With xmin below a selection cut on m_jj (e.g. histograms filled from 170 GeV and xmin = 150),
+    this is above xmin: the bins in between are empty because of the cut, not of the spectrum."""
+    ax = hist.GetXaxis()
+    for i in range(1, ax.GetNbins() + 1):
+        lo, hi = ax.GetBinLowEdge(i), ax.GetBinUpEdge(i)
+        if hi <= xmin + 1e-9 or lo < xmin - 1e-9:
+            continue
+        if lo >= xmax - 1e-9:
+            break
+        if hist.GetBinContent(i) != 0:
+            return lo
+    return None
+
+
 def window_hist(ROOT, hist, xmin, xmax, rebin=1, name=None):
     """New TH1D with the content of `hist` in [xmin, xmax], bins merged by `rebin`
     (see bin_edges_in_window). Bin errors are combined in quadrature."""

@@ -324,7 +324,7 @@ def test_every_fit_has_a_plot(run):
     assert len(list((out / "signal_param" / "plots").glob("model_*.png"))) == ncat
 
 
-# ---- step 6 and the bias test (CMS Combine) -------------------------------------------------------
+# ---- steps 6-7 and the bias test (CMS Combine) -------------------------------------------------------
 def combine_cmd(run, *args):
     return subprocess.run(["combine", *map(str, args)], cwd=run["out"] / "datacards",
                           capture_output=True, text=True)
@@ -407,6 +407,90 @@ def test_combine_mass_is_set_by_m(run):
         assert found, p.stdout[-2000:]
         limits[m] = float(found.group(1))
     assert abs(limits[masses[0]] / limits[masses[-1]] - 1) > 0.1, limits
+
+
+def test_expected_limits(ROOT, run):
+    """Step 7 of run_all.sh: an expected limit at every mass of the grid (every LIMIT_STEP GeV
+    over the signal mass range), with the five quantiles positive and ordered, and the plot.
+    Closure: for the background-only Asimov data set the median expected asymptotic CLs limit is
+    1.96 sigma_r (CL_b = 0.5 there, so CL_s+b = 0.025), with sigma_r the uncertainty on r of the
+    Asimov fit; it is compared with sigma_r from FitDiagnostics --robustFit (envelope, mu = 0,
+    upper error), allowing for the asymmetry of the likelihood between r = 0 and the limit."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import expected_limits as EL
+    lim = json.loads((run["out"] / "limits" / "limits.json").read_text())
+    masses = expected_masses(run["fit_range"])
+    assert lim["masses"] == EL.mass_grid(masses[0], masses[-1], syn.LIMIT_STEP)
+    assert lim["failed_masses"] == []
+    assert (run["out"] / "limits" / "expected_limits.png").exists()
+    assert (run["out"] / "limits" / "limits_summary.md").exists()
+    for m in lim["masses"]:
+        e = lim["limits"][str(m)]
+        assert e["rc"] == 0 and EL.is_complete(e["expected"]), (m, e)
+    for m in (masses[0], masses[-1]):
+        sig = max(20.0, 50.0 * sigma_r_estimate(ROOT, run, m))
+        p = combine_cmd(run, "-M", "FitDiagnostics", "datacard_combined.root", "-m", m, "-t", -1,
+                        "--expectSignal", 0, "--toysNoSystematics", "--rMin", -sig, "--rMax", sig,
+                        "--robustFit", 1, "--skipBOnlyFit", *C.DISCRETE_PROFILING_OPTIONS,
+                        "-n", f".limcheck{m}")
+        found = re.findall(r"Best fit r: ([-0-9.eE+]+)\s+-([0-9.eE+]+)/\+([0-9.eE+]+)", p.stdout)
+        assert p.returncode == 0 and found, p.stdout[-3000:]
+        r, _lo, hi = map(float, found[-1])
+        ratio = lim["limits"][str(m)]["expected"]["0.5"] / (1.96 * hi)
+        print(f"M{m}: median expected limit / (1.96 sigma_r) = {ratio:.3f} (r = {r:.3g}, sigma_r = {hi:.3g})")
+        # the envelope may pick another function than the generating one on the Asimov data set,
+        # which shifts r by a fraction of sigma_r (0.11 sigma_r at 200 GeV with seed 12345)
+        assert abs(r) < 0.25 * hi and 0.85 < ratio < 1.2, (m, r, hi, ratio)
+
+
+def test_expected_limits_report_a_failed_mass(run, tmp_path, monkeypatch):
+    """A mass point whose Combine job fails is listed in failed_masses, the outputs are still
+    written, and the script exits with an error."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import expected_limits as EL
+    real = EL.combine_command
+    m_bad = expected_masses(run["fit_range"])[-1]
+    monkeypatch.setattr(EL, "combine_command",
+                        lambda ws, m: real(ws, m) + (["--no-such-option"] if m == m_bad else []))
+    monkeypatch.setattr(sys, "argv", ["expected_limits.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path / "lim"), "--masses", str(m_bad - 50), str(m_bad),
+                                      "--formats", "png", "--jobs", "2"])
+    with pytest.raises(SystemExit) as e:
+        EL.main()
+    assert "failed" in str(e.value)
+    lim = json.loads((tmp_path / "lim" / "limits.json").read_text())
+    assert lim["failed_masses"] == [m_bad]
+    assert EL.is_complete(lim["limits"][str(m_bad - 50)]["expected"])
+
+
+def test_fit_background_refuses_a_lower_edge_below_the_filled_bins(ROOT, run, tmp_path):
+    """If the data histogram of a category is empty at the lower edge of the fit range (a cut on
+    m_jj above XMIN in the inputs), fit_background.py stops with an error naming the category
+    and the first filled bin, instead of fitting the empty bins as a drop of the spectrum."""
+    xmin, xmax = run["fit_range"]
+    c = first_category()
+    src = ROOT.TFile.Open(str(run["out"] / "inputs.root"))
+    dst = ROOT.TFile.Open(str(tmp_path / "inputs.root"), "RECREATE")
+    for k in src.GetListOfKeys():
+        if not k.GetClassName().startswith("TDirectory"):  # metadata (TNamed) objects
+            dst.cd()
+            k.ReadObj().Write(k.GetName())
+            continue
+        d = dst.mkdir(k.GetName())
+        d.cd()
+        for kk in src.Get(k.GetName()).GetListOfKeys():
+            h = kk.ReadObj()
+            if k.GetName() == c and kk.GetName() == "data_obs":
+                for i in range(1, h.GetNbinsX() + 1):
+                    if h.GetBinLowEdge(i) < xmin + 10:
+                        h.SetBinContent(i, 0.0)
+                        h.SetBinError(i, 0.0)
+            h.Write()
+    dst.Close()
+    p = script("fit_background.py", tmp_path / "inputs.root", "--xmin", xmin, "--xmax", xmax,
+               "--functions", "dijet4", "--formats", "png", "-o", tmp_path / "a")
+    assert p.returncode != 0
+    assert "no data at the lower edge" in p.stderr and c in p.stderr and f"{xmin + 10:g} GeV" in p.stderr
 
 
 def test_bias_test_script(run):

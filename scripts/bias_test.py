@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Step 7: bias test of the signal strength with CMS Combine (all categories combined).
+"""Step 8: bias test of the signal strength with CMS Combine (all categories combined).
 
 For every signal mass M and injected signal strength mu, Combine generates pseudo-data
 (binned toys, `combine -M GenerateOnly --expectSignal mu`) from the combined workspace of

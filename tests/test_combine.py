@@ -1,4 +1,5 @@
-"""Unit tests for dijetfit.combine: datacard text and bias-test statistics."""
+"""Unit tests for dijetfit.combine and the Combine scripts: datacard text, bias-test statistics,
+expected-limit helpers."""
 import math
 
 import pytest
@@ -82,3 +83,20 @@ def test_bias_test_log_fit_counts(tmp_path):
     log.write_text("$ combine -M MultiDimFit ws.root -t 4 --algo none -n .fixed\n" + fit * 2
                    + " WARNING: MultiDimFit failed\n" + fit * 2)
     assert BT.log_fit_counts(log, "fixed") == dict(ok=3, failed=1, found=True)
+
+
+def test_expected_limits_mass_grid_and_completeness():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import expected_limits as EL
+    assert EL.mass_grid(200, 500, 25) == list(range(200, 501, 25))
+    assert EL.mass_grid(200, 510, 100) == [200, 300, 400, 500, 510]  # upper end always included
+    with pytest.raises(ValueError):
+        EL.mass_grid(200, 500, 0)
+    good = {"0.025": 0.5, "0.16": 0.7, "0.5": 1.0, "0.84": 1.4, "0.975": 1.9}
+    assert EL.is_complete(good)
+    assert not EL.is_complete({k: v for k, v in good.items() if k != "0.975"})  # a missing quantile
+    assert not EL.is_complete(dict(good, **{"0.16": 1.2}))  # not ordered
+    assert not EL.is_complete(dict(good, **{"0.025": 0.0}))  # not positive
+

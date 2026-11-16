@@ -49,7 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dijetfit import background as B  # noqa: E402
 from dijetfit.common import DATA_NAME, category_labels, setup_root, write_json  # noqa: E402
-from dijetfit.histtools import bin_edges_in_window, binning_label, window_hist  # noqa: E402
+from dijetfit.histtools import bin_edges_in_window, binning_label, first_filled_edge, window_hist  # noqa: E402
 from dijetfit.plotting import fit_plot  # noqa: E402
 from dijetfit.scan import scan_fit_range  # noqa: E402
 
@@ -156,6 +156,17 @@ def main():
             sys.exit(f"ERROR: no {c}/{DATA_NAME} in {args.input}")
         h.SetDirectory(0)
         raw[c] = h
+    # The data must be filled from XMIN up: empty bins at the lower edge come from a selection cut
+    # on m_jj above XMIN (e.g. histograms of events with m_jj > 170 GeV and XMIN = 150 GeV); a fit
+    # would take them as a real drop of the spectrum.
+    starts = {c: first_filled_edge(raw[c], args.xmin, args.xmax) for c in cats}
+    late = {c: e for c, e in starts.items() if e is None or e > args.xmin + 1e-9}
+    if late:
+        sys.exit("ERROR: no data at the lower edge of the fit range (XMIN = "
+                 f"{args.xmin:g} GeV), probably because of a cut on m_jj in the input histograms: "
+                 + ", ".join(f"{c} (first filled bin at "
+                             + ("none" if e is None else f"{e:g} GeV") + ")" for c, e in late.items())
+                 + "; set XMIN to at least the first filled bin")
     rebin = {c: 1 for c in cats}
     rebin.update(parse_rebin(args.rebin))
 
