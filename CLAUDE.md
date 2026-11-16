@@ -4,6 +4,14 @@
   See README.md (workflow) and docs/OUTPUT_FORMAT.md (final output format; keep it up to date).
 - **Never commit ROOT files.** Input ROOT files are provided by the user via the prompt only.
 - Do not commit or push without the user's explicit request.
+- Commit authorship: the author (and committer) of every commit is the repository's owner, with
+  their git credentials (name and email) as used in the repository history; Claude is credited
+  only through the `Co-Authored-By:` trailer. Do not rely on the environment's git identity
+  (cloud sessions are set up as Claude's own): take the owner's identity from the history, e.g.
+  the author of the first commit of the default branch
+  (`git log --reverse --format='%an <%ae>' origin/main | head -1`, the account that owns the
+  GitHub repository), set it for the clone (`git config user.name ...`, `git config user.email
+  ...`) or pass `--author`, and check with `git log --format='%an <%ae>'` before pushing.
 - ROOT version: 6.36.14 (conda-forge), with CMS Combine 11.1.0 for RooMultiPdf. Run python
   inside the conda environment (setup/shell.sh, `source setup/activate.sh` or
   `setup/envrun.sh COMMAND`; these remove a ROOT set up in the calling shell); see setup/.
