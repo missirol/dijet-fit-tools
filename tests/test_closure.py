@@ -6,13 +6,13 @@
 * Scan test: a background with a turn-on just above the configured lower edge; the background
   step with --scan must raise the lower edge past the turn-on.
 
-The workflow runs once per test module (a few tens of seconds); select or skip these tests with
+The workflow runs once per test module (a few minutes); select or skip these tests with
 `pytest -m closure` / `pytest -m "not closure"`. Pass `--basetemp DIR` to keep the outputs.
 """
 import json
+import math
 import os
 import re
-import shutil
 import subprocess
 import sys
 
@@ -22,6 +22,7 @@ import pytest
 import synthetic as syn
 from conftest import REPO
 from dijetfit import background as B
+from dijetfit import combine as C
 from dijetfit.histtools import window_hist
 
 pytestmark = pytest.mark.closure
@@ -90,8 +91,9 @@ def expected_counts_of_fit(ROOT, fit, edges, tag):
         v = ROOT.RooRealVar(f"q{k}_{tag}", "", fit["params"][f"p{k}"]["value"])
         al.add(v)
         keep.append(v)
-    pdf = B.make_pdf(ROOT, f"pdf_{tag}", fit["name"], al, fit["formula"])
+    keep += B.add_constants(ROOT, al, fit.get("constants"), "c", tag)  # the per-fit constants
     lo, hi = np.array(edges[:-1]), np.array(edges[1:])
+    pdf = B.make_pdf(ROOT, f"pdf_{tag}", fit["name"], al, fit["formula"], B.bin_sum_nbins(lo, hi))
     return B.expected_counts(ROOT, x, pdf, fit["norm"]["value"], lo, hi, B.needs_bin_integration(lo, hi))
 
 
@@ -111,7 +113,15 @@ def test_background_closure(ROOT, run):
     sel = (e[:-1] >= xmin - 1e-9) & (e[1:] <= xmax + 1e-9)
     for cat in syn.CATEGORIES:
         cb = run["bkg"]["categories"][cat_name(cat)]
-        assert all(f["n_errors"] == 0 and f["status"] == 0 for f in cb["fits"].values())
+        # the log-linear families (dijet4 generates the data) always converge; a non-linear function
+        # that does not (it may sit in an almost flat valley on these data) must be failed by the
+        # selection and not be used
+        bad = {n: (f["status"], f["n_errors"], f["messages"][:2]) for n, f in cb["fits"].items()
+               if B.is_loglinear(n) and not (f["n_errors"] == 0 and f["status"] == 0)}
+        assert not bad, (cat, bad)
+        for n, f in cb["fits"].items():
+            if not B.fit_quality_ok(f):
+                assert f["verdict"].startswith("fail") and n not in cb["passing"], (cat, n, f["verdict"])
         assert cb["passing"], cat
         gen = cb["fits"]["dijet4"]
         assert not gen["verdict"].startswith("fail"), (cat, gen["verdict"])
@@ -224,6 +234,11 @@ def test_workspace_content(run, workspace):
                      f"pdfindex_{c}", f"mjj_{c}"):
             assert w.obj(name), name
         assert w.pdf(f"bkg_{c}").getNumPdfs() == len(run["bkg"]["categories"][c]["passing"])
+    # the functions that are not log-linear reach the workspace, with their constant arguments
+    nl = [(c, f) for c, v in run["bkg"]["categories"].items() for f in v["passing"] if not B.is_loglinear(f)]
+    assert nl, "no non-linear background function in any RooMultiPdf of the synthetic inputs"
+    for c, f in nl:
+        assert w.pdf(f"bkg_{c}_{f}") and w.obj(f"{f}_c0_{c}"), (c, f)
     # each parameter is interpolated through the masses where it was floating (if >= 2)
     for c, cd in run["param"]["categories"].items():
         for k, md in cd["models"].items():
@@ -233,6 +248,34 @@ def test_workspace_content(run, workspace):
     checks = run["ws"]["checks"]
     assert checks["max_rel_diff_signal_workspace_vs_parametrisation"] < 1e-9
     assert checks["max_abs_diff_bkg_chi2"] < 1e-6
+
+
+def test_workspace_pdfs_sum_to_one_over_the_bin_centres(ROOT, run, workspace):
+    """Every pdf in the workspace (signal at several masses, every background function) is
+    normalised by its sum over the bin centres: Combine's per-bin predictions N x pdf(centre) x
+    width then add up exactly to the yield. A mismatch of only ~1e-6 (the signal pdf with its
+    analytical integral) biased r by 0.2-0.3 sigma at the lowest mass with ~1e7 background events."""
+    w = workspace
+    mh = w.var("MH")
+    for c in (cat_name(cat) for cat in syn.CATEGORIES):
+        x = w.var(f"mjj_{c}")
+        ns = ROOT.RooArgSet(x)
+        edges = run["bkg"]["categories"][c]["bin_edges"]
+        centres = [0.5 * (a + b) for a, b in zip(edges[:-1], edges[1:])]
+        width = edges[1] - edges[0]
+
+        def bin_sum(pdf):
+            tot = 0.0
+            for xc in centres:
+                x.setVal(xc)
+                tot += pdf.getVal(ns) * width
+            return tot
+
+        for m in (mh.getMin(), 0.5 * (mh.getMin() + mh.getMax()), mh.getMax()):
+            mh.setVal(m)
+            assert bin_sum(w.pdf(f"ZprimeQQ_{c}")) == pytest.approx(1.0, abs=1e-12), (c, m)
+        for func in run["bkg"]["categories"][c]["passing"]:
+            assert bin_sum(w.pdf(f"bkg_{c}_{func}")) == pytest.approx(1.0, abs=1e-12), (c, func)
 
 
 def test_signal_model_at_a_mass_not_used_in_the_fits(ROOT, run, workspace):
@@ -281,43 +324,349 @@ def test_every_fit_has_a_plot(run):
     assert len(list((out / "signal_param" / "plots").glob("model_*.png"))) == ncat
 
 
-@pytest.mark.skipif(shutil.which("text2workspace.py") is None, reason="CMS Combine not available")
-def test_combine_reads_workspace_and_mass_is_set_by_m(run, tmp_path):
-    """Regression test: Combine reads the workspace, and -m sets the signal mass (MH must be a
-    constant parameter, otherwise Combine fits it and -m has no effect)."""
-    c = cat_name(next(iter(syn.CATEGORIES)))
-    ws = run["out"] / "workspace" / "dijet_workspace.root"
-    (tmp_path / "card.txt").write_text(f"""imax 1
-jmax 1
-kmax *
----------------
-shapes ZprimeQQ  {c}  {ws} w:ZprimeQQ_{c}
-shapes bkg       {c}  {ws} w:bkg_{c}
-shapes data_obs  {c}  {ws} w:data_obs_{c}
----------------
-bin          {c}
-observation  -1
----------------
-bin          {c}   {c}
-process      ZprimeQQ  bkg
-process      0    1
-rate         1    1
----------------
-pdfindex_{c} discrete
-""")
-    sh = lambda *a: subprocess.run(a, cwd=tmp_path, capture_output=True, text=True)  # noqa: E731
-    assert sh("text2workspace.py", "card.txt", "-o", "card.root").returncode == 0
+# ---- steps 6-7 and the bias test (CMS Combine) -------------------------------------------------------
+def combine_cmd(run, *args):
+    return subprocess.run(["combine", *map(str, args)], cwd=run["out"] / "datacards",
+                          capture_output=True, text=True)
+
+
+def best_fit_r(run, mass, mu, rrange, tag, *extra):
+    """r of a Combine fit (MultiDimFit, best fit only) to the Asimov data set for mu."""
+    p = combine_cmd(run, "-M", "MultiDimFit", "datacard_combined.root", "-m", mass, "-t", -1,
+                    "--expectSignal", mu, "--toysNoSystematics", "--rMin", rrange[0],
+                    "--rMax", rrange[1],
+                    "--algo", "none", *C.DISCRETE_PROFILING_OPTIONS, "-n", tag, *extra)
+    assert p.returncode == 0 and "MultiDimFit failed" not in p.stdout, p.stdout[-3000:]
+    found = re.search(r"best fit parameter values:\s*\n\s*r :\s*([-+0-9.eE]+)", p.stdout)
+    assert found, p.stdout[-2000:]
+    return float(found.group(1))
+
+
+def test_datacards(run):
+    """One datacard per category, taking everything from the workspace; the combined card and
+    workspace exist (make_datacards.py also checks the expected yields in the latter)."""
+    d = run["out"] / "datacards"
+    meta = json.loads((d / "datacards.json").read_text())
+    assert sorted(meta["categories"]) == sorted(run["ws"]["categories"])
+    for c in meta["categories"]:
+        card = (d / meta["cards"][c]).read_text()
+        assert f"w:bkg_{c}" in card and f"w:ZprimeQQ_{c}" in card and f"w:data_obs_{c}" in card
+        assert f"pdfindex_{c}" in card
+    combined = (d / "datacard_combined.txt").read_text()
+    assert re.search(rf"imax {len(meta['categories'])}\b", combined)
+    assert (d / "datacard_combined.root").exists()
+
+
+def sigma_r_estimate(ROOT, run, mass):
+    """Lower bound on the uncertainty of r (background fixed): 1 / sqrt(sum s_i^2 / b_i), with
+    s_i the signal (sigma = 1 nb) and b_i the data in each bin of every category."""
+    f = ROOT.TFile.Open(str(run["out"] / "workspace" / "dijet_workspace.root"))
+    w = f.Get("w")
+    w.var("MH").setVal(mass)
+    info = 0.0
+    for c in run["ws"]["categories"]:
+        x, d = w.var(f"mjj_{c}"), w.data(f"data_obs_{c}")
+        pdf, norm = w.pdf(f"ZprimeQQ_{c}"), w.function(f"ZprimeQQ_{c}_norm").getVal()
+        for i in range(d.numEntries()):
+            x.setVal(d.get(i).getRealValue(x.GetName()))
+            s = norm * pdf.getVal(ROOT.RooArgSet(x)) * 1.0
+            info += s * s / max(d.weight(), 1.0)
+    return 1.0 / math.sqrt(info)
+
+
+def test_combine_asimov_fit_returns_the_injected_signal(ROOT, run):
+    """Regression test for the normalisation of the background pdfs: a Combine fit to its own
+    Asimov data set, with the generating background function, must return the injected signal
+    strength (within 2% of its uncertainty). With the pdfs normalised by their integral instead
+    of the sum over the bin centres, the expected counts per bin do not add up to the yield, and
+    with ~10^7 events per category the fitted r was off by up to one standard deviation."""
+    masses = expected_masses(run["fit_range"])
+    meta = json.loads((run["out"] / "datacards" / "datacards.json").read_text())
+    idx = [v["index"] for v in meta["categories"].values()]
+    fix = ["--setParameters", ",".join(f"{v['index']}={v['default_index']}"
+                                       for v in meta["categories"].values()),
+           "--freezeParameters", ",".join(idx)]
+    for m in (masses[0], masses[-1]):
+        sigma = sigma_r_estimate(ROOT, run, m)
+        for mu in (0.0, 3.0 * sigma):
+            r = best_fit_r(run, m, mu, (mu - 20 * sigma, mu + 20 * sigma), f".asimov{m}_{mu:g}", *fix)
+            assert abs(r - mu) < 0.02 * sigma, (m, mu, r, sigma)
+
+
+def test_combine_mass_is_set_by_m(run):
+    """Regression test: -m sets the signal mass (MH must be a constant parameter, otherwise
+    Combine fits it and -m has no effect)."""
     masses = expected_masses(run["fit_range"])
     if len(masses) < 2:
         pytest.skip("fewer than two signal masses for this fit range")
     limits = {}
     for m in (masses[0], masses[-1]):
-        p = sh("combine", "-M", "AsymptoticLimits", "card.root", "-m", str(m), "--run", "blind",
-               "--cminDefaultMinimizerStrategy", "0", "-n", f".m{m}")
+        p = combine_cmd(run, "-M", "AsymptoticLimits", "datacard_combined.root", "-m", m,
+                        "--run", "blind", "--cminDefaultMinimizerStrategy", "0", "-n", f".m{m}")
         found = re.search(r"Expected 50\.0%: r < ([0-9.eE+-]+)", p.stdout)
         assert found, p.stdout[-2000:]
         limits[m] = float(found.group(1))
     assert abs(limits[masses[0]] / limits[masses[-1]] - 1) > 0.1, limits
+
+
+def test_expected_limits(ROOT, run):
+    """Step 7 of run_all.sh: an expected limit at every mass of the grid (every LIMIT_STEP GeV
+    over the signal mass range), with the five quantiles positive and ordered, and the plot.
+    Closure: for the background-only Asimov data set the median expected asymptotic CLs limit is
+    1.96 sigma_r (CL_b = 0.5 there, so CL_s+b = 0.025), with sigma_r the uncertainty on r of the
+    Asimov fit; it is compared with sigma_r from FitDiagnostics --robustFit (envelope, mu = 0,
+    upper error), allowing for the asymmetry of the likelihood between r = 0 and the limit."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import expected_limits as EL
+    lim = json.loads((run["out"] / "limits" / "limits.json").read_text())
+    masses = expected_masses(run["fit_range"])
+    assert lim["masses"] == EL.mass_grid(masses[0], masses[-1], syn.LIMIT_STEP)
+    assert lim["failed_masses"] == []
+    assert (run["out"] / "limits" / "expected_limits.png").exists()
+    assert (run["out"] / "limits" / "limits_summary.md").exists()
+    for m in lim["masses"]:
+        e = lim["limits"][str(m)]
+        assert e["rc"] == 0 and EL.is_complete(e["expected"]), (m, e)
+    for m in (masses[0], masses[-1]):
+        sig = max(20.0, 50.0 * sigma_r_estimate(ROOT, run, m))
+        p = combine_cmd(run, "-M", "FitDiagnostics", "datacard_combined.root", "-m", m, "-t", -1,
+                        "--expectSignal", 0, "--toysNoSystematics", "--rMin", -sig, "--rMax", sig,
+                        "--robustFit", 1, "--skipBOnlyFit", *C.DISCRETE_PROFILING_OPTIONS,
+                        "-n", f".limcheck{m}")
+        found = re.findall(r"Best fit r: ([-0-9.eE+]+)\s+-([0-9.eE+]+)/\+([0-9.eE+]+)", p.stdout)
+        assert p.returncode == 0 and found, p.stdout[-3000:]
+        r, _lo, hi = map(float, found[-1])
+        ratio = lim["limits"][str(m)]["expected"]["0.5"] / (1.96 * hi)
+        print(f"M{m}: median expected limit / (1.96 sigma_r) = {ratio:.3f} (r = {r:.3g}, sigma_r = {hi:.3g})")
+        # the envelope may pick another function than the generating one on the Asimov data set,
+        # which shifts r by a fraction of sigma_r (0.11 sigma_r at 200 GeV with seed 12345)
+        assert abs(r) < 0.25 * hi and 0.85 < ratio < 1.2, (m, r, hi, ratio)
+
+
+def test_expected_limits_report_a_failed_mass(run, tmp_path, monkeypatch):
+    """A mass point whose Combine job fails is listed in failed_masses, the outputs are still
+    written, and the script exits with an error."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import expected_limits as EL
+    real = EL.combine_command
+    m_bad = expected_masses(run["fit_range"])[-1]
+    monkeypatch.setattr(EL, "combine_command",
+                        lambda ws, m: real(ws, m) + (["--no-such-option"] if m == m_bad else []))
+    monkeypatch.setattr(sys, "argv", ["expected_limits.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path / "lim"), "--masses", str(m_bad - 50), str(m_bad),
+                                      "--formats", "png", "--jobs", "2"])
+    with pytest.raises(SystemExit) as e:
+        EL.main()
+    assert "failed" in str(e.value)
+    lim = json.loads((tmp_path / "lim" / "limits.json").read_text())
+    assert lim["failed_masses"] == [m_bad]
+    assert EL.is_complete(lim["limits"][str(m_bad - 50)]["expected"])
+
+
+def test_fit_background_refuses_a_lower_edge_below_the_filled_bins(ROOT, run, tmp_path):
+    """If the data histogram of a category is empty at the lower edge of the fit range (a cut on
+    m_jj above XMIN in the inputs), fit_background.py stops with an error naming the category
+    and the first filled bin, instead of fitting the empty bins as a drop of the spectrum."""
+    xmin, xmax = run["fit_range"]
+    c = first_category()
+    src = ROOT.TFile.Open(str(run["out"] / "inputs.root"))
+    dst = ROOT.TFile.Open(str(tmp_path / "inputs.root"), "RECREATE")
+    for k in src.GetListOfKeys():
+        if not k.GetClassName().startswith("TDirectory"):  # metadata (TNamed) objects
+            dst.cd()
+            k.ReadObj().Write(k.GetName())
+            continue
+        d = dst.mkdir(k.GetName())
+        d.cd()
+        for kk in src.Get(k.GetName()).GetListOfKeys():
+            h = kk.ReadObj()
+            if k.GetName() == c and kk.GetName() == "data_obs":
+                for i in range(1, h.GetNbinsX() + 1):
+                    if h.GetBinLowEdge(i) < xmin + 10:
+                        h.SetBinContent(i, 0.0)
+                        h.SetBinError(i, 0.0)
+            h.Write()
+    dst.Close()
+    p = script("fit_background.py", tmp_path / "inputs.root", "--xmin", xmin, "--xmax", xmax,
+               "--functions", "dijet4", "--formats", "png", "-o", tmp_path / "a")
+    assert p.returncode != 0
+    assert "no data at the lower edge" in p.stderr and c in p.stderr and f"{xmin + 10:g} GeV" in p.stderr
+
+
+def test_bias_test_script(run):
+    """bias_test.py end to end on a small configuration (10 toys in 3 jobs, two generators):
+    every toy is fitted and counted in the Combine log, the seeds are unique, the pull toys are
+    taken from several jobs, the per-toy function indices are saved, and the fixed-function fits
+    close (mean r compatible with the injected mu)."""
+    masses = expected_masses(run["fit_range"])
+    meta = json.loads((run["out"] / "datacards" / "datacards.json").read_text())
+    # a family that is an alternate (not the default) in at least one category
+    fams = {re.sub(r"\d+$", "", f) for v in meta["categories"].values()
+            for i, f in v["index_to_function"].items() if int(i) != v["default_index"]}
+    gen2 = f"family-{sorted(fams)[0]}"
+    out = run["base"] / "bias"
+    mu = 1.0
+    p = subprocess.run([sys.executable, str(REPO / "scripts" / "bias_test.py"),
+                        run["out"] / "datacards" / "datacards.json", "-o", out, "--masses",
+                        str(masses[-1]), "--mu", f"{mu:g}", "--ntoys", "10", "--toys-per-job", "4",
+                        "--generate", "default", gen2, "--pull-toys", "6", "--jobs", "3",
+                        "--formats", "png"],
+                       capture_output=True, text=True)
+    (run["base"] / "bias_test.log").write_text(p.stdout + p.stderr)
+    assert p.returncode == 0, p.stderr[-3000:]
+    # no warning other than about the size of the bias (10 toys: the bias can be large)
+    assert all(ln.startswith("  WARNING (bias)") for ln in p.stdout.splitlines() if "WARNING" in ln), \
+        p.stdout[-3000:]
+    res = json.loads((out / "bias_results.json").read_text())
+    assert res["asimov"][str(masses[-1])]["sigma"] > 0 and res["failed_jobs"] == []
+    assert res["categories"] == list(meta["categories"])
+    assert {pt["generate"] for pt in res["points"]} == {"default", gen2}
+    for point in res["points"]:
+        for mode in ("envelope", "fixed"):
+            s = point["summary"][mode]
+            assert s["n"] == 10 and s["n_failed"] == 0 and s["n_reported_ok"] == 10
+            assert s["n_failed_fit"] == 0 and s["n_failed_unexplained"] == 0
+            assert (out / "plots" / f"rfit_{point['generate']}_{mode}_M{masses[-1]}_mu1.png").exists()
+        idx = point["toys"]["envelope_index"]
+        assert len(idx) == 10 and all(len(i) == len(meta["categories"]) for i in idx)
+        assert len(point["toys"]["pull_fits"]) == 6  # 4 from the first job, 2 from the second
+        fixed = point["summary"]["fixed"]
+        assert abs(fixed["mean"] - mu) < 4 * fixed["std"] / math.sqrt(fixed["n"])
+    seeds = [int(re.search(r"\.(\d+)\.root$", f.name).group(1))
+             for f in (out / "work").glob("*/job*/higgsCombine.gen.GenerateOnly.*.root")]
+    assert len(seeds) == 6 and len(set(seeds)) == 6
+    assert (out / "plots" / "bias_summary_default.png").exists()
+    # points above the bias threshold: flagged, listed and warned about, but not a failure
+    thr = res["bias_threshold"]
+    above = {(f["generate"], f["fit"]) for f in res["points_above_threshold"]}
+    for point in res["points"]:
+        for mode in ("envelope", "fixed"):
+            s = point["summary"][mode]
+            assert s["above_threshold"] == (abs(s["bias_over_sigma"]) > thr)
+            assert ((point["generate"], mode) in above) == s["above_threshold"]
+            warned = f"WARNING (bias): {point['generate']} M{point['mass']} mu 1 {mode}:" in p.stdout
+            assert warned == s["above_threshold"]
+    assert f"## Points with |bias| > {thr} sigma (warnings)" in (out / "bias_summary.md").read_text()
+
+
+def test_bias_test_survives_a_failing_job_and_resumes(run, tmp_path, monkeypatch):
+    """A Combine job that fails is recorded (failed_jobs, its toys counted as failed); the other
+    jobs are analysed and the outputs are written. --resume then reruns only the failed job."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    masses = expected_masses(run["fit_range"])
+    original = BT.Runner.job
+
+    def job(self, gen, mass, mu, j, *a):
+        if j == 1:
+            raise RuntimeError("simulated failure")
+        return original(self, gen, mass, mu, j, *a)
+
+    monkeypatch.setattr(BT.Runner, "job", job)
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--masses", str(masses[-1]), "--mu", "0",
+                                      "--ntoys", "6", "--toys-per-job", "3", "--fits", "fixed",
+                                      "--jobs", "2", "--formats", "png"])
+    BT.main()
+    res = json.loads((tmp_path / "bias_results.json").read_text())
+    assert len(res["failed_jobs"]) == 1 and "simulated failure" in res["failed_jobs"][0]["error"]
+    s = res["points"][0]["summary"]["fixed"]
+    assert s["n"] == 3 and s["n_failed"] == 3 and s["n_lost_in_failed_jobs"] == 3
+    assert s["n_failed_unexplained"] == 0
+    assert "1 Combine job(s) failed" in (tmp_path / "bias_summary.md").read_text()
+
+    # --resume with the same arguments: only the failed job runs again, the finished job and the
+    # Asimov fit are reused, and the result is complete
+    first = res["points"][0]["toys"]["fixed"]  # r of the toys of job 0
+    monkeypatch.setattr(BT.Runner, "job", original)
+    calls = []
+    monkeypatch.setattr(BT.C, "run", lambda cmd, *a, _run=BT.C.run: (calls.append(cmd[2]), _run(cmd, *a)))
+    monkeypatch.setattr(sys, "argv", sys.argv + ["--resume"])
+    BT.main()
+    res2 = json.loads((tmp_path / "bias_results.json").read_text())
+    assert res2["failed_jobs"] == [] and res2["resumed"] == {"asimov": 1, "toys": 1}
+    assert calls == ["GenerateOnly", "MultiDimFit"]  # one job, one fit mode; no Asimov fit
+    s = res2["points"][0]["summary"]["fixed"]
+    assert s["n"] == 6 and s["n_failed"] == 0 and s["n_failed_unexplained"] == 0
+    assert res2["points"][0]["toys"]["fixed"][:3] == first  # job 0 taken from the first run
+
+    # different settings (another seed): nothing is reused
+    calls.clear()
+    monkeypatch.setattr(sys, "argv", sys.argv + ["--seed", "777"])
+    BT.main()
+    assert json.loads((tmp_path / "bias_results.json").read_text())["resumed"] == {"asimov": 1, "toys": 0}
+    assert calls.count("GenerateOnly") == 2
+
+    # same arguments, but other Combine options: nothing is reused (the commands are part of the
+    # settings), not even the Asimov fit
+    calls.clear()
+    monkeypatch.setattr(BT.C, "DISCRETE_PROFILING_OPTIONS",
+                        BT.C.DISCRETE_PROFILING_OPTIONS + ["--X-rtd", "MINIMIZER_freezeDisassociatedParams"])
+    BT.main()
+    assert json.loads((tmp_path / "bias_results.json").read_text())["resumed"] == {"asimov": 0, "toys": 0}
+    assert calls.count("GenerateOnly") == 2 and calls.count("FitDiagnostics") == 1
+
+
+def test_bias_test_survives_a_failed_asimov_fit(run, tmp_path, monkeypatch):
+    """A failed Asimov fit leaves its mass out (listed in failed_jobs); the other masses keep the
+    seeds they have without the failure (reproducible, compatible with --resume)."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    masses = expected_masses(run["fit_range"])
+    first, last = masses[0], masses[-1]
+    original = BT.Runner.asimov_sigma
+
+    def asimov(self, mass):
+        if mass == first:
+            raise RuntimeError("simulated Asimov failure")
+        return original(self, mass)
+
+    monkeypatch.setattr(BT.Runner, "asimov_sigma", asimov)
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--masses", str(first), str(last), "--mu", "0",
+                                      "--ntoys", "2", "--toys-per-job", "2", "--fits", "fixed",
+                                      "--seed", "500", "--jobs", "1", "--formats", "png"])
+    BT.main()
+    res = json.loads((tmp_path / "bias_results.json").read_text())
+    assert res["masses"] == [last] and [p["mass"] for p in res["points"]] == [last]
+    assert [f["generate"] for f in res["failed_jobs"]] == ["asimov"] and res["failed_jobs"][0]["mass"] == first
+    assert res["points"][0]["summary"]["fixed"]["n"] == 2
+    # seeds 500 (first mass, skipped) and 501 (last mass), as without the failure
+    assert [f.name for f in (tmp_path / "work").glob("*/job0/higgsCombine.gen.*.root")] == \
+        [f"higgsCombine.gen.GenerateOnly.mH{last}.501.root"]
+    assert f"Asimov fit failed at M = [{first}] GeV" in (tmp_path / "bias_summary.md").read_text()
+
+
+def test_bias_test_refuses_duplicate_values(run, tmp_path, monkeypatch):
+    """Duplicate values (e.g. --mu 1 1.0) would make two jobs share a directory."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import bias_test as BT
+    monkeypatch.setattr(sys, "argv", ["bias_test.py", str(run["out"] / "datacards" / "datacards.json"),
+                                      "-o", str(tmp_path), "--mu", "1", "1.0"])
+    with pytest.raises(SystemExit, match="duplicate values in --mu"):
+        BT.main()
+
+
+def test_make_datacards_detects_a_shape_mismatch(ROOT, run):
+    """The shape check of make_datacards.py passes on the combined workspace and fails when a
+    background shape parameter or the signal differs from the source workspace."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import make_datacards as MD
+    summary = run["ws"]
+    src_f = ROOT.TFile.Open(str(run["out"] / "workspace" / "dijet_workspace.root"))
+    src = src_f.Get("w")
+    f = ROOT.TFile.Open(str(run["out"] / "datacards" / "datacard_combined.root"))
+    w = f.Get("w")
+    c = next(iter(summary["categories"]))
+    masses = summary["categories"][c]["signal"]["masses"]
+    mh, mh_src = w.var(summary["mass_variable"]), src.var(summary["mass_variable"])
+    assert MD.check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses) == []
+    default = summary["categories"][c]["background"]["functions"][summary["categories"][c]["background"]["default"]]
+    par = next(v for v in w.pdf(default).getVariables()
+               if not v.isConstant() and "mjj" not in v.GetName() and v.GetName() != summary["mass_variable"])
+    par.setVal(par.getVal() + 0.5)
+    problems = MD.check_shapes(ROOT, w, src, summary, c, mh, mh_src, masses)
+    assert any("background function" in x for x in problems), problems
 
 
 # ---- fit-range scan ------------------------------------------------------------------------------
@@ -424,24 +773,21 @@ def test_workspace_refuses_bins_wider_than_1gev(run, tmp_path):
     assert not (tmp_path / "w.root").exists()
 
 
-def test_drop_failing_categories(run, tmp_path):
-    """With a goodness-of-fit threshold that one category cannot meet, fit_background.py stops;
-    with --drop-failing-categories it leaves that category out and lists it."""
+def test_a_category_without_a_passing_function_fails_the_case(run, tmp_path):
+    """With a goodness-of-fit threshold that one category cannot meet, fit_background.py writes
+    its outputs and stops with an error naming that category: an analysis case needs a passing
+    function in every category (categories are never dropped)."""
     xmin, xmax = run["fit_range"]
     pvals = {c: v["fits"]["dijet4"]["pvalue"] for c, v in run["bkg"]["categories"].items()}
     worst = min(pvals, key=pvals.get)
     others = sorted(v for c, v in pvals.items() if c != worst)
     thr = 0.5 * (pvals[worst] + others[0])
-    args = [run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax, "--functions", "dijet4",
-            "--pvalue-threshold", thr, "--formats", "png"]
-    p = script("fit_background.py", *args, "-o", tmp_path / "a")
-    assert p.returncode != 0 and "drop-failing-categories" in p.stderr
-    p = script("fit_background.py", *args, "-o", tmp_path / "b", "--drop-failing-categories")
-    assert p.returncode == 0, p.stderr[-2000:]
-    out = json.loads((tmp_path / "b" / "background_fits.json").read_text())
-    assert list(out["dropped_categories"]) == [worst]
-    assert out["dropped_categories"][worst]["reason"] == "no passing background function"
-    assert sorted(out["categories"]) == sorted(c for c in pvals if c != worst)
+    p = script("fit_background.py", run["out"] / "inputs.root", "--xmin", xmin, "--xmax", xmax,
+               "--functions", "dijet4", "--pvalue-threshold", thr, "--formats", "png", "-o", tmp_path / "a")
+    assert p.returncode != 0 and "the analysis case fails" in p.stderr and worst in p.stderr
+    out = json.loads((tmp_path / "a" / "background_fits.json").read_text())
+    assert sorted(out["categories"]) == sorted(pvals) and "dropped_categories" not in out
+    assert out["categories"][worst]["passing"] == []
 
 
 def test_signal_binning_must_match_data(ROOT, run, tmp_path):
@@ -481,21 +827,39 @@ def test_masses_near_the_upper_edge_are_dropped(run, tmp_path):
     assert top in out["categories"][c]["dropped"] and top not in out["categories"][c]["masses"]
 
 
-def test_failed_signal_fits_are_not_parametrised(run, tmp_path):
-    """A signal fit flagged as failed is left out of the parametrisation and listed."""
+def test_fit_signal_stops_on_a_failed_fit(run, tmp_path, monkeypatch):
+    """A signal fit that fails (here: one mass made to fail the quality check) makes
+    fit_signal.py write its outputs, with the fit flagged, and stop: the analysis case fails."""
+    sys.path.insert(0, str(REPO / "scripts"))
+    import fit_signal as FS
+    c = first_category()
+    masses = run["sig"]["categories"][c]["masses"] if "sig" in run else \
+        json.loads((run["out"] / "signal" / "signal_fits.json").read_text())["categories"][c]["masses"]
+    bad = masses[0]
+    real = FS.S.fit_ok
+    monkeypatch.setattr(FS.S, "fit_ok", lambda fit: real(fit) and fit["mass"] != bad)
+    monkeypatch.setattr(sys, "argv", ["fit_signal.py", str(run["out"] / "inputs.root"), "--background",
+                                      str(run["out"] / "background" / "background_fits.json"),
+                                      "-o", str(tmp_path), "--categories", c, "--formats", "png"])
+    with pytest.raises(SystemExit, match="the analysis case fails"):
+        FS.main()
+    out = json.loads((tmp_path / "signal_fits.json").read_text())
+    fits = out["categories"][c]["fits"]
+    assert fits[str(bad)]["usable"] is False
+    assert all(f["usable"] for m, f in fits.items() if m != str(bad))
+
+
+def test_a_failed_signal_fit_fails_the_case(run, tmp_path):
+    """A signal fit flagged as failed stops the parametrisation: every signal fit must pass in
+    every category of an analysis case."""
     sig = json.loads((run["out"] / "signal" / "signal_fits.json").read_text())
     c = first_category()
     masses = sig["categories"][c]["masses"]
-    if len(masses) < 3:
-        pytest.skip("needs at least three signal masses")
-    bad = masses[1]
+    bad = masses[len(masses) // 2]
     assert all(f["usable"] for f in sig["categories"][c]["fits"].values())
     sig["categories"][c]["fits"][str(bad)]["usable"] = False
     (tmp_path / "sig.json").write_text(json.dumps(sig))
     p = script("parametrize_signal.py", tmp_path / "sig.json", "--input", run["out"] / "inputs.root",
                "-o", tmp_path / "param", "--formats", "png")
-    assert p.returncode == 0, p.stderr[-2000:]
-    par = json.loads((tmp_path / "param" / "signal_parametrisation.json").read_text())
-    assert par["categories"][c]["excluded_masses"] == [bad]
-    assert bad not in par["categories"][c]["masses"]
-    assert bad not in par["categories"][c]["models"]["norm"]["points"]["masses"]
+    assert p.returncode != 0
+    assert "the analysis case fails" in p.stderr and c in p.stderr and str(bad) in p.stderr

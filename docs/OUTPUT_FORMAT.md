@@ -30,6 +30,7 @@ parameter is shared between them, except the signal mass `MH`.
 | `ZprimeQQ_CAT_norm` | `RooFormulaVar(MH)` | expected signal yield **inside the fit range** for σ(pp→Z'→qq) = **1 nb** and the luminosity given to `prepare_inputs.py` (default 680000 nb⁻¹) |
 | `bkg_CAT` | `RooMultiPdf` (Combine) | background model: discrete choice among the accepted functions |
 | `pdfindex_CAT` | `RooCategory` | index of the background function used by `bkg_CAT`; default (index 0) = the F-test-selected family maximum with the largest goodness-of-fit p-value |
+| `<func>_c<i>_CAT` | `RooConstVar` | per-fit constants of the formula of background function `<func>` (decorrelation matrix, centres, reference mass; see below) |
 | `bkg_CAT_<func>` | `RooGenericPdf` | each accepted background function (e.g. `bkg_CAT_dijet5`) |
 | `<func>_p<k>_CAT` | `RooRealVar` | parameters of background function `<func>` (floating, set to the fitted values) |
 | `bkg_CAT_norm` | `RooRealVar` | background yield in the fit range (floating; set to the fitted value of the default function) |
@@ -42,8 +43,8 @@ Notes:
   of `eventsProcessed` in the signal file), i.e. to σ = 1 nb. A Combine signal strength `r`
   is therefore the cross section × branching fraction in nb.
 * **Signal parametrisation**: by default a natural cubic spline through the values fitted at the
-  mass points (polynomials can be chosen in `parametrize_signal.py`). Failed signal fits are not
-  used. Each parameter is interpolated only through the mass points where it was floating in
+  mass points (polynomials can be chosen in `parametrize_signal.py`). Every signal fit must pass
+  (otherwise the analysis case fails and no workspace is built). Each parameter is interpolated only through the mass points where it was floating in
   the fit (values fixed by the fitting procedure are not measurements), or through all points if
   fewer than two float; beyond its outermost points used, a parameter is held constant (e.g.
   `alphaR` when it was fixed at the highest mass because the right tail lies outside the fit
@@ -53,23 +54,44 @@ Notes:
   the yield to non-negative values; the mean is not clamped. `MH` is limited to the mass range
   covered by every category, so no parameter is extrapolated.
 * **Background functions** (see `scripts/fit_background.py` and `dijetfit/background.py`):
-  the families `dijet`, `moddijet` and `ua2` with 3–6 parameters (the number includes the
-  normalisation). The formulas are written in a numerically decorrelated basis: the fitted
-  parameters `<func>_p<k>_CAT` are linear combinations of the parameters of the published form,
-  and have uncertainties of order 1. The function family is unchanged; the coefficients of the
-  published form are in `background_fits.json` (`params_original`).
+  the families of the analysis note: `dijet`, `moddijet` (3–6 parameters), `ua2` (4–6 in the
+  note; `ua23` is an addition), `modexp`, `polypow` (3–5) and `polyext` (5–6); the number
+  includes the normalisation (forms in the README). The formulas are written in a numerically decorrelated parametrisation: the fitted
+  parameters `<func>_p<k>_CAT` (the q) are related to the parameters p of the published form by
+  p = p_start + M q (log-linear families: p = M q on centred terms), and have uncertainties of
+  order 1 at the start. The per-fit constants of the formula (M, the centres p_start or t̄, the
+  reference mass) are `RooConstVar` arguments `<func>_c<i>_CAT` of the pdf (listed in
+  `background_fits.json`, `constants`), so that all fits of a function share one compiled
+  formula. The parameters of the published form are in `background_fits.json`
+  (`params_original`).
 * **Background functions in `bkg_CAT`** (at most 5): a fit is acceptable if it has status 0,
-  covariance quality 3, no parameter at a limit and goodness-of-fit p-value > 0.05. In each
+  covariance quality 3, no parameter at a limit (after up to 3 re-centrings of its range) and
+  goodness-of-fit p-value > 0.05. In each
   family, standard Fisher F-tests (threshold 0.05), starting from the lowest acceptable order,
   give the highest order. The default is the family maximum with the largest p-value; up to 4
   alternates are the other acceptable functions of order at most their family's maximum,
   ranked by p-value. `pdfindex_CAT` index 0 is the default, then the alternates in this order.
-* The background pdfs carry their own numerical integrator settings (adaptive Gauss–Kronrod,
-  relative precision 1e-10), which the fits need for these sample sizes (~2×10⁷ events/category).
+  With `fit_background.py --alternates family-max`, only the highest order of each family is
+  used (at most one function per family); `background_fits.json` records the choice
+  (`alternates`: `orders` or `family-max`).
+* **Normalisation of the pdfs** (background and signal): each pdf carries its own integrator setting,
+  `RooBinIntegrator` with one point per bin, i.e. the pdf is normalised by the sum of its values
+  at the bin centres times the bin width, not by its integral. Combine (like RooFit for binned
+  data) predicts N × pdf(bin centre) × width per bin, but uses N as the total of the extended
+  likelihood; with the bin-sum normalisation the two agree exactly, and the likelihood is the
+  binned Poisson likelihood of the bin-centre predictions. With the integral as normalisation
+  they differ by O(10⁻⁵) (midpoint rule), which for ~2×10⁷ events per category pulls the
+  background parameters by O(1σ) and the fitted signal strength in Combine by up to ~2σ (also
+  for Combine's own toys). The signal pdf (RooCrystalBall, analytical integral switched off with
+  `forceNumInt`) is normalised in the same way: its mismatch of only ~10⁻⁶ biased r by 0.2-0.3σ
+  at 200 GeV. The background and signal fits (steps 2, 3) use the same normalisation.
+  The `RooBinIntegrator` places its points at the centres of `numBins` equal intervals of the
+  range being normalised; this is the set of bin centres only for the full fit range. A pdf
+  normalised over a sub-range (e.g. a plot or blinding range) would be evaluated at other points.
 * **Binning**: only 1 GeV bins are supported in the workspace (the binning is stored in
   `mjj_CAT`). Combine evaluates the pdfs at the bin centres; for wider bins (a category rebinned
-  by the fit-range scan) the fits integrate the pdfs over each bin instead, and bin-centre
-  evaluation would be biased by many standard deviations for these sample sizes. So
+  by the fit-range scan) the fits integrate the pdfs over each bin instead, so the fitted
+  parameters would not describe the model that Combine uses. So
   `build_workspace.py` stops with an error for any category with bins wider than 1 GeV; the
   rebinned fit results remain available for inspection.
 * `RooMultiPdf` is a Combine class: reading `bkg_CAT` needs the Combine library
@@ -100,3 +122,30 @@ pdfindex_CAT discrete
 
 `rate 1` means that the normalisation is taken from `ZprimeQQ_CAT_norm` / `bkg_CAT_norm`.
 The mass hypothesis is set with `-m`, e.g. `text2workspace.py card.txt -m 300`.
+
+`scripts/make_datacards.py` (step 6 of `run_all.sh`) writes these cards for all categories
+(`datacards/datacard_CAT.txt`, with the workspace path relative to the card), combines them with
+`combineCards.py` keeping the category names as bin names (`datacard_combined.txt`), and runs
+`text2workspace.py` (`datacard_combined.root`). The combined workspace is checked against the source
+workspace: expected yields (signal at every mass, background) and normalised shapes (every
+background function, and the signal at every mass) at every bin centre. The signal process has the same name in all
+categories, so the signal strength `r` is common to all of them; the background parameters,
+yields and indices are separate per category (uncorrelated). There are no systematic
+uncertainties. `datacards.json` lists the names used by the later steps (categories, index
+parameters and their functions, signal masses).
+
+Fits with the `RooMultiPdf` use the options recommended for discrete profiling
+(`dijetfit/combine.py`, `DISCRETE_PROFILING_OPTIONS`):
+`--cminDefaultMinimizerStrategy 0 --X-rtd MINIMIZER_freezeDisassociatedParams
+--X-rtd MINIMIZER_multiMin_hideConstants --X-rtd MINIMIZER_multiMin_maskConstraints
+--X-rtd MINIMIZER_multiMin_maskChannels=2`. Uncertainties on `r` need `--robustFit 1`: the
+default Hesse/Minos errors are wrong with the envelope (the index changes during the error scan).
+
+## Expected limits (step 7)
+
+`scripts/expected_limits.py` runs `combine -M AsymptoticLimits --run blind` on
+`datacard_combined.root` with the options above, one job per mass (`-m`), and writes
+`limits/limits.json`: `masses`, `quantiles` (`"0.025"`, `"0.16"`, `"0.5"`, `"0.84"`, `"0.975"`),
+`limits` (per mass: `expected` = {quantile: upper limit on r}, Combine's exit code `rc`, `log`),
+`failed_masses`, and the inputs used (`datacards`, `workspace`, `categories`, `fit_range`, `method`,
+`options`). The limits are on r, i.e. on the cross section in units of 1 nb.

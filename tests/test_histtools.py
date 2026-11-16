@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from conftest import make_th1
-from dijetfit.histtools import bin_edges_in_window, binning_label, window_hist
+from dijetfit.histtools import bin_edges_in_window, binning_label, first_filled_edge, window_hist
 
 
 @pytest.fixture
@@ -39,3 +39,17 @@ def test_window_hist_contents_and_errors(ROOT, hist):
 def test_binning_label():
     assert binning_label([0.0, 2.0, 4.0]) == "2 bins of 2 GeV"
     assert "last bin narrower" in binning_label([0.0, 2.0, 3.0])
+
+
+def test_first_filled_edge(ROOT):
+    """Lower edge of the first non-empty bin inside the window: xmin itself if that bin is filled,
+    the edge of the first filled bin if lower bins are empty (a cut on m_jj above xmin), None if
+    the window is empty."""
+    edges = np.arange(100.0, 121.0, 1.0)
+    contents = np.where(edges[:-1] >= 107.0, 5.0, 0.0)  # filled from 107 (a cut at 107)
+    h = make_th1(ROOT, "h_cut", edges, contents)
+    assert first_filled_edge(h, 108, 120) == 108.0
+    assert first_filled_edge(h, 107, 120) == 107.0
+    assert first_filled_edge(h, 100, 120) == 107.0
+    assert first_filled_edge(h, 100, 105) is None
+

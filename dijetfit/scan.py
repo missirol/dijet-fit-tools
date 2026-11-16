@@ -15,9 +15,8 @@ Priority:
 Rebinning is off by default in the workflow (no rebin factors): build_workspace.py cannot use
 categories with bins wider than the original ones.
 
-With drop_failing=True (categories without a passing function will be left out), the result is
-the scanned configuration with the most passing categories and, among those, the lowest lower
-edge: a category that never passes does not push the lower edge of all the others up.
+If some category still fails at `scan_max`, the caller stops: every category of an analysis case
+needs a passing background function (categories are never dropped).
 """
 
 
@@ -34,7 +33,7 @@ def smallest_working_factor(evaluate, xmin, cat, factors):
 
 
 def scan_fit_range(evaluate, cats, start, step, max_unbinned, scan_max, rebin_factors=(),
-                   log=print, drop_failing=False):
+                   log=print):
     """Run the scan; returns (xmin, {cat: rebin}, {cat: result}, [failing categories])."""
     eps = 1e-9
     rebin_factors = sorted(f for f in rebin_factors if f > 1)
@@ -50,14 +49,7 @@ def scan_fit_range(evaluate, cats, start, step, max_unbinned, scan_max, rebin_fa
         return failing
 
     def finish():
-        xmin, rebin, results, failing = history[-1]
-        if failing and drop_failing:
-            best = min(history, key=lambda h: (len(h[3]), h[0]))
-            if best is not history[-1]:
-                log(f"Categories without a passing function will be dropped: using xmin = {best[0]:g} GeV, "
-                    f"the lowest edge with the most passing categories ({len(cats) - len(best[3])}/{len(cats)})")
-            return best
-        return xmin, rebin, results, failing
+        return history[-1]
 
     log("Stage 1: original binning (no rebinning)")
     xmin = start

@@ -37,9 +37,14 @@ def test_function_names_and_parsing():
     assert B.function_names(["ua2"], orders=(3, 4)) == ["ua23", "ua24"]
     assert B.parse_function("ua25") == ("ua2", 5)
     assert B.terms_of("dijet4") == ["ln1mx", "L1", "L2"]
-    for bad in ("dijet2", "dijet7", "expo3"):
+    for bad in ("dijet2", "dijet7", "expo3", "modexp6", "polypow6", "polyext4", "ua22"):
         with pytest.raises(ValueError):
             B.parse_function(bad)
+    # the families of the analysis note, with their orders
+    assert B.function_names(["modexp", "polypow", "polyext"]) == [
+        "modexp3", "modexp4", "modexp5", "polypow3", "polypow4", "polypow5", "polyext5", "polyext6"]
+    assert len(B.function_names()) == 20 and B.parse_function("polyext6") == ("polyext", 6)
+    assert B.is_loglinear("ua23") and not B.is_loglinear("modexp4") and B.terms_of("polypow4") == []
 
 
 def test_reference_mass_is_geometric_mean():  # pure arithmetic, independent of the configured range
@@ -122,16 +127,22 @@ def test_bin_centre_evaluation_at_1gev(ROOT, fit_range):
 
 
 def test_wide_bins_are_integrated(ROOT, fit_range, monkeypatch):
-    """Regression test: with 10 GeV bins and ~10^7 events, evaluating the pdf at the bin centres
-    is biased by many standard deviations; the fit must integrate over the bins."""
+    """Regression test, 10 GeV bins and ~10^7 events (truth: the function integrated over the
+    bins). The fit integrates over the bins and reproduces the truth. Evaluating the pdf at the
+    bin centres also works if it is normalised by its sum over the bin centres (the expected
+    counts then add up to the yield), but is biased by many standard deviations with RooFit's
+    default normalisation by the integral (the expected counts do not add up to the yield)."""
     h = asimov(ROOT, fit_range, width=10.0, integrate=True, name="asimov10")
     r = B.fit_function(ROOT, "dijet4", h, "t_int")
     assert r["bin_integration"] and r["status"] == 0 and r["n_errors"] == 0
     assert r["chi2"] < 0.05
     monkeypatch.setattr(B, "BIN_INTEGRATION_ABOVE", 1e9)  # force bin-centre evaluation
     r_c = B.fit_function(ROOT, "dijet4", h, "t_cen")
-    assert not r_c["bin_integration"]
-    assert r_c["chi2"] > 100 * max(r["chi2"], 1e-3)
+    assert not r_c["bin_integration"] and r_c["chi2"] < 0.05
+    monkeypatch.setattr(B, "bin_sum_nbins", lambda lo, hi: None)  # normalise by the integral
+    r_i = B.fit_function(ROOT, "dijet4", h, "t_cen_int")
+    assert not r_i["bin_integration"]
+    assert r_i["chi2"] > 100 * max(r["chi2"], 1e-3)
 
 
 def test_pdf_carries_precise_integrator(ROOT, fit_range):
@@ -141,6 +152,29 @@ def test_pdf_carries_precise_integrator(ROOT, fit_range):
     cfg = pdf.specialIntegratorConfig()
     assert cfg.epsRel() == pytest.approx(B.INTEGRATOR_EPS_REL)
     assert cfg.method1D().getCurrentLabel() == "RooAdaptiveGaussKronrodIntegrator1D"
+
+
+def test_bin_sum_normalisation(ROOT, fit_range):
+    """With uniform bins, the pdf is normalised by its sum over the bin centres: the expected
+    counts N * pdf(centre) * width add up exactly to N (with the integral as normalisation they
+    differ by the midpoint-rule error, ~1e-5 here, which biases fits with ~1e7 events)."""
+    xmin, xmax = fit_range
+    nb = int(round(xmax - xmin))
+    lo = np.arange(nb) + xmin
+    hi = lo + 1.0
+    assert B.bin_sum_nbins(lo, hi) == nb
+    assert B.bin_sum_nbins(np.array([0.0, 2.0]), np.array([2.0, 4.0])) is None  # integrated
+    assert B.bin_sum_nbins(np.array([0.0, 1.0]), np.array([1.0, 1.5])) is None  # not uniform
+    x = ROOT.RooRealVar("x_bs", "", xmin, xmax)
+    p = ROOT.RooRealVar("p_bs", "", -0.03)
+    formula = "exp(@1*@0)"
+    pdf = B.make_pdf(ROOT, "pdf_bs", "test", ROOT.RooArgList(x, p), formula, nb)
+    assert pdf.specialIntegratorConfig().method1D().getCurrentLabel() == "RooBinIntegrator"
+    nu = B.expected_counts(ROOT, x, pdf, 1e7, lo, hi, False)
+    assert nu.sum() == pytest.approx(1e7, rel=1e-12)
+    ref = B.make_pdf(ROOT, "pdf_bs_int", "test", ROOT.RooArgList(x, p), formula)
+    nu_int = B.expected_counts(ROOT, x, ref, 1e7, lo, hi, False)
+    assert abs(nu_int.sum() / 1e7 - 1) > 1e-6  # the mismatch that the bin sum removes
 
 
 def test_baker_cousins():
@@ -194,6 +228,23 @@ def test_selection_follows_standard_ftest_sequence():
     assert v["dijet4"] == "pass (alternate 3)"
 
 
+def test_selection_with_only_the_family_maxima():
+    """--alternates family-max: one function per family, its F-test maximum."""
+    nb = 450
+    fits = [_fake("dijet4", 470, p=0.06), _fake("dijet5", 440, p=0.6), _fake("dijet6", 439.8, p=0.6),
+            _fake("moddijet3", 452, p=0.3), _fake("moddijet4", 451.5, p=0.31),
+            _fake("ua24", 470, p=0.08), _fake("ua25", 440, p=0.5)]
+    v, default = B.select_functions(fits, nb, 0.05, 0.05, 4, family_max_only=True)
+    assert default == "dijet5"
+    assert v["ua25"] == "pass (alternate 1)" and v["moddijet3"] == "pass (alternate 2)"
+    assert v["dijet4"] == "not used: below the family maximum (dijet5)"
+    assert v["ua24"] == "not used: below the family maximum (ua25)"
+    assert v["dijet6"] == "not used: above the F-test maximum (dijet5)"
+    # the default selection keeps the lower orders
+    v, _ = B.select_functions(fits, nb, 0.05, 0.05, 4)
+    assert v["dijet4"].startswith("pass (alternate") and v["ua24"].startswith("pass (alternate")
+
+
 def test_selection_caps_alternates_and_handles_no_acceptable_fit():
     nb = 450
     fits = [_fake(f"{fam}3", 450, p=p) for fam, p in (("dijet", 0.9), ("moddijet", 0.5), ("ua2", 0.4))]
@@ -208,10 +259,18 @@ def test_selection_caps_alternates_and_handles_no_acceptable_fit():
 def test_parameter_at_limit_is_reported_after_the_last_attempt(ROOT, fit_range, monkeypatch):
     """Regression test: a parameter that still ends at its limit after the last re-centring must
     be reported, and the fit must fail the quality requirement, even though Minuit reports a
-    good fit (status 0, covQual 3). A narrow parameter range (QRANGE, in units of the parameter
-    uncertainties) makes the parameters hit their limits: the minimum of the bin-centre fit is
-    ~0.7 sigma away from the starting values for this histogram."""
+    good fit (status 0, covQual 3). The starting values are moved by 3 standard deviations
+    (in the decorrelated basis) and a narrow parameter range (QRANGE, in units of the parameter
+    uncertainties) makes the parameters hit their limits."""
     h = asimov(ROOT, fit_range, integrate=True, name="asimov_lim")
+    orig = B.start_values
+
+    def shifted(name, hist, m0):
+        p, mu = orig(name, hist, m0)
+        M, _ = B.decorrelated_basis(name, hist, mu, m0)
+        return p + M @ np.full(len(p), 3.0), mu
+
+    monkeypatch.setattr(B, "start_values", shifted)
     monkeypatch.setattr(B, "QRANGE", 0.05)
     monkeypatch.setattr(B, "MAX_RECENTRE", 1)
     r = B.fit_function(ROOT, "dijet4", h, "t_lim")
@@ -248,3 +307,98 @@ def test_selection_with_a_missing_order_and_a_failed_fit():
     assert default == "dijet3"
     assert v["dijet5"].startswith("not used: the dijet4 fit is missing")
     assert v["ua23"] == "fail: the fit raised an exception"
+
+
+# ---- all families: shared formula, the families that are not log-linear --------------------------
+# typical parameters of the non-linear functions: fits to a category of the real data (150-600 GeV)
+NL_TRUTH = {
+    "modexp3": (-54.82, 0.1767), "modexp4": (26.81, -0.09235, 2.417),
+    "modexp5": (-551.18, 1.55835, 9.79123, 93.05),
+    "polypow3": (259.0, 5.816), "polypow4": (1831.0, 2.995e4, 3.967), "polypow5": (578.9, -5784.0, 9.629e4, 5.687),
+    "polyext5": (-61.11, 9.102, 0.4708, -19.07), "polyext6": (-152.7, 13.78, 0.9088, -38.62, 380.6),
+}
+
+
+def _nl_truth(fit_range, name):
+    """NL_TRUTH, or skip if it is not a valid falling spectrum over the configured fit range."""
+    p = np.array(NL_TRUTH[name])
+    m = np.linspace(*fit_range, 50)
+    lf = B.nonlinear_log_f(name, m / B.SQRTS, p)
+    if not np.all(np.isfinite(lf)) or not np.all(np.diff(lf) < 0):
+        pytest.skip(f"{name}: the typical parameters are not valid over the fit range {fit_range}")
+    return p
+
+
+def test_formula_with_constants_matches_numpy_for_every_function(ROOT, fit_range):
+    """The RooFit formula of the decorrelated parametrisation (per-fit constants as arguments)
+    describes the same function as numpy, for every function of every family."""
+    XMIN, XMAX = fit_range
+    rng = np.random.default_rng(3)
+    m0 = B.reference_mass(XMIN, XMAX)
+    x = ROOT.RooRealVar("x_all", "", XMIN, XMAX)
+    for name in B.function_names():
+        k = B.parse_function(name)[1] - 1
+        M = np.eye(k) + 0.01 * rng.normal(size=(k, k))
+        q = 0.1 * rng.normal(size=k)
+        if B.is_loglinear(name):
+            centre = rng.normal(size=k)
+            T = B.term_defs(m0)
+            lnf = lambda m: sum(q[j] * sum(M[i, j] * (T[t][0](m) - centre[i])  # noqa: E731
+                                           for i, t in enumerate(B.terms_of(name))) for j in range(k))
+        else:
+            centre = np.array(NL_TRUTH[name])
+            lnf = lambda m: B.nonlinear_log_f(name, m / B.SQRTS, centre + M @ q)  # noqa: E731
+        formula, consts = B.formula_and_constants(name, k, m0, M, centre)
+        al = ROOT.RooArgList(x)
+        keep = [ROOT.RooRealVar(f"q{j}_{name}", "", v) for j, v in enumerate(q)]
+        for v in keep:
+            al.add(v)
+        keep += B.add_constants(ROOT, al, consts, "c", name)
+        fv = ROOT.RooFormulaVar(f"fv_{name}", formula, al)
+        ms = np.linspace(XMIN, XMAX, 6)[1:-1]
+        ref = np.array([lnf(np.array([m]))[0] for m in ms])
+        got = []
+        for m in ms:
+            x.setVal(m)
+            got.append(np.log(fv.getVal()))
+        # ratios between masses (the normalisation is free)
+        assert np.array(got) - got[0] == pytest.approx(ref - ref[0], abs=1e-8), name
+
+
+def test_fits_of_a_function_share_one_compiled_formula(ROOT, fit_range):
+    """The formula string does not depend on the data or the fit range (the per-fit constants
+    are arguments), so ROOT compiles it once per function."""
+    XMIN, XMAX = fit_range
+    h1 = asimov(ROOT, fit_range, name="share1")
+    h2 = asimov(ROOT, (XMIN + 10.0, XMAX), name="share2")
+    for name in ("dijet5", "polyext5"):
+        r1 = B.fit_function(ROOT, name, h1, f"share1_{name}")
+        r2 = B.fit_function(ROOT, name, h2, f"share2_{name}")
+        assert r1["formula"] == r2["formula"]
+        assert r1["constants"] != r2["constants"]
+
+
+# At these typical parameters the likelihood of modexp4 and polypow4 has an almost flat, curved
+# direction (e.g. (1 + p1 x + p2 x^2)^-p3 for large p1, p2); Minuit's covariance matrix may then be
+# forced positive-definite (covQual 2), and such a fit fails the covQual 3 requirement of the
+# selection, as for any function.
+NEARLY_FLAT = {"modexp4", "polypow4"}
+
+
+@pytest.mark.parametrize("name", B.function_names(["modexp", "polypow", "polyext"]))
+def test_nonlinear_fit_recovers_its_own_asimov(ROOT, fit_range, name):
+    """Asimov histogram (bin-centre expectation) of a non-linear function: the start search and
+    the RooFit fit reproduce it exactly (covQual 3, except for NEARLY_FLAT: at least 2)."""
+    XMIN, XMAX = fit_range
+    p = _nl_truth(fit_range, name)
+    edges = np.arange(XMIN, XMAX + 0.5, 1.0)
+    c = 0.5 * (edges[:-1] + edges[1:])
+    f = np.exp(B.nonlinear_log_f(name, c / B.SQRTS, p))
+    h = make_th1(ROOT, f"asimov_nl_{name}", edges, N_EVENTS * f / f.sum())
+    p_start, mu = B.start_values_nonlinear(name, h)
+    assert B.baker_cousins(B.hist_arrays(h)[2], mu) < 1e-3
+    r = B.fit_function(ROOT, name, h, f"t_nl_{name}")
+    assert r["status"] == 0 and not r["params_at_limit"], r["messages"]
+    assert r["cov_qual"] == 3 or (name in NEARLY_FLAT and r["cov_qual"] == 2), r["cov_qual"]
+    assert r["chi2"] < 1e-2 and r["pvalue"] > 0.99
+    assert np.array(r["expected"]) == pytest.approx(B.hist_arrays(h)[2], rel=1e-4)

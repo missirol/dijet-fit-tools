@@ -18,9 +18,13 @@ splines, non-zero for polynomial fits) is reported.
 RooMultiPdf is a class of CMS Combine; the Combine library must be loadable. With
 --no-multipdf the RooMultiPdf is not written (all other objects are).
 
+The background and signal pdfs are normalised by their sum over the bin centres (RooBinIntegrator, stored
+with each pdf; see dijetfit/background.make_pdf), as in the fits: Combine predicts N x pdf(bin
+centre) x bin width per bin, and these predictions then add up exactly to the yield N.
+
 Categories with bins wider than the original 1 GeV (rebinned by fit_background.py) are refused:
 for such bins the fits integrate the pdfs over each bin, while Combine evaluates them at the bin
-centres, which for these sample sizes is biased by many standard deviations.
+centres, so the fitted parameters would not describe the model that Combine uses.
 
 The mass variable MH covers the mass range common to all categories (no extrapolation of any
 category's signal model).
@@ -83,9 +87,9 @@ def main():
         sys.exit("ERROR: categories with bins wider than 1 GeV: "
                  + "; ".join(f"{c} ({b})" for c, b in wide.items())
                  + ". The background and signal fits integrated the pdfs over these bins, but the "
-                 "RooWorkspace written by this script can only be used with the bin-centre "
-                 "evaluation that Combine applies to binned data, which for such bins is biased by "
-                 "many standard deviations. Only 1 GeV bins are supported for the workspace.")
+                 "RooWorkspace written by this script is used with the bin-centre evaluation that "
+                 "Combine applies to binned data, i.e. with a different model than the one fitted. "
+                 "Only 1 GeV bins are supported for the workspace.")
 
     # MH: the mass range covered by every category (no extrapolation of any signal model)
     lo_m = max(min(sig["categories"][c]["masses"]) for c in cats)
@@ -114,6 +118,9 @@ def main():
             if not cb["passing"]:
                 sys.exit(f"ERROR: {c}: no passing background function")
             edges = cb["bin_edges"]
+            nbins = B.bin_sum_nbins(np.array(edges[:-1]), np.array(edges[1:]))
+            if not nbins:
+                sys.exit(f"ERROR: {c}: the bins are not uniform")
             x = ROOT.RooRealVar(f"mjj_{c}", "m_{jj} [GeV]", xmin, xmax)
             x.setBinning(ROOT.RooBinning(len(edges) - 1, np.array(edges, dtype="d")))
             h = window_hist(ROOT, tfile.Get(f"{c}/{DATA_NAME}"), xmin, xmax, cb["rebin"],
@@ -133,6 +140,7 @@ def main():
                 fv[k] = ROOT.RooFormulaVar(name, f"{k}(MH), {c}", expr, ROOT.RooArgList(mh))
                 keep.append(fv[k])
             spdf = ROOT.RooCrystalBall(sp, f"Z'->qq signal, {c}", x, *[fv[k] for k in CB_PARAMS])
+            B.set_bin_sum_normalisation(spdf, nbins)  # as the background and the signal fits
             wimport(w, spdf, ROOT)
             wimport(w, fv["norm"], ROOT)
             keep.append(spdf)
@@ -153,7 +161,10 @@ def main():
                     v.setError(pr["error"])
                     arglist.add(v)
                     keep.append(v)
-                pdf = B.make_pdf(ROOT, f"bkg_{c}_{func}", func, arglist, fr["formula"])
+                # per-fit constants of the formula (decorrelation matrix, centres, M0)
+                keep += B.add_constants(ROOT, arglist, fr.get("constants"), f"{func}_c", c)
+                # normalised by the sum over the bin centres, as in the fits (see B.make_pdf)
+                pdf = B.make_pdf(ROOT, f"bkg_{c}_{func}", func, arglist, fr["formula"], nbins)
                 pdfs.add(pdf)
                 if not use_multipdf:  # RooMultiPdf defines the category states itself
                     cat_index.defineType(func, i)
@@ -227,7 +238,7 @@ def main():
         for func in bkg["categories"][c]["passing"]:
             pdf = w2.pdf(f"bkg_{c}_{func}")
             fr = bkg["categories"][c]["fits"][func]
-            # bin-centre evaluation, as in Combine (wide bins are refused above)
+            # bin-centre evaluation with the bin-sum normalisation, as in the fits and in Combine
             nu = B.expected_counts(ROOT, x2, pdf, fr["norm"]["value"], lo, hi, False)
             chi2 = B.baker_cousins(n, nu)
             worst_chi2 = max(worst_chi2, abs(chi2 - fr["chi2"]))

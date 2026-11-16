@@ -10,3 +10,5 @@ __pycache__/
 /env/
 /.mamba/
 /bin/micromamba
+combine_logger.out
+demo_output/

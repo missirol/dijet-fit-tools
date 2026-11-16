@@ -38,6 +38,7 @@ LUMI = 1000.0            # nb^-1 given to prepare_inputs.py
 N_GENERATED = 1_000_000  # signal events processed per mass point
 FIT_MASSES = (200, 300, 400, 500)
 VALIDATION_MASSES = (350,)
+LIMIT_STEP = 50          # mass grid of the expected limits (run_all.sh LIMIT_STEP)
 CATEGORY_PREFIX = "TestJet_dY"
 CATEGORY_SUFFIX = "_mjj"
 INCLUSIVE = "0p0to1p5"
@@ -192,7 +193,8 @@ def workflow_config(xmin, xmax, scan_max=None):
         LUMI=str(LUMI), XMIN=f"{xmin:g}", XMAX=f"{xmax:g}",
         SCAN_MAX=f"{scan_max if scan_max is not None else xmin + 60.0:g}",
         CATEGORIES=f"({CATEGORY_PREFIX}\\d+p\\d+to\\d+p\\d+){CATEGORY_SUFFIX}",
-        EXCLUDE=f"{CATEGORY_PREFIX}{INCLUSIVE}{CATEGORY_SUFFIX}", FORMATS="png")
+        EXCLUDE=f"{CATEGORY_PREFIX}{INCLUSIVE}{CATEGORY_SUFFIX}", LIMIT_STEP=str(LIMIT_STEP),
+        FORMATS="png")
 
 
 def main():
