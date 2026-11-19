@@ -1,8 +1,13 @@
 # Dijet resonance search: signal and background fits
 
 Builds the inputs of the statistical analysis of a search for dijet resonances (Z'→qq) in CMS
-data: parametric fits of the m_jj spectrum in 11 categories of the rapidity separation |Δy|
-of the two jets, written to a RooWorkspace (format: [docs/OUTPUT_FORMAT.md](docs/OUTPUT_FORMAT.md)).
+data: parametric fits of the m_jj spectrum in categories of the two jets (by default 11 slices
+of their rapidity separation |Δy|), written to a RooWorkspace (format:
+[docs/OUTPUT_FORMAT.md](docs/OUTPUT_FORMAT.md)), Combine datacards, expected limits and bias tests.
+
+The analysis decisions the code implements are listed in
+[docs/ANALYSIS_CONVENTIONS.md](docs/ANALYSIS_CONVENTIONS.md); the analysis cases run so far, with
+their settings and results, in [studies/cases/README.md](studies/cases/README.md).
 
 ## Setup
 
@@ -168,6 +173,25 @@ reject fits. In the parametrisation, each parameter is interpolated only through
 where it was floating in the fit (values fixed by the procedure are not measurements), or
 through all points if fewer than two of them float.
 
+## Running an analysis case
+
+`studies/run_case.sh` runs one case end to end: the workflow (steps 1–7, with the case's
+settings as the environment variables of `run_all.sh`) and a short bias test (step 8: by
+default 100 toys per mass at μ = 1, generated with the default function of every category and
+fitted with the envelope and with the generating function fixed).
+
+```
+CATEGORIES='(L1SCaloJet_Std_Opt1dRap\d+p\d+to\d+p\d+dPhi\d+p\d+to\d+p\d+)_J1J2_mass' EXCLUDE="" XMIN=170 \
+  setup/envrun.sh studies/run_case.sh out/opt1 DATA.root SIGNAL_M200.root SIGNAL_M300.root ...
+```
+
+Each part leaves a marker when it finishes, so the same command continues an interrupted run
+(the bias test resumes from its finished Combine jobs). The configuration is saved in
+`OUTDIR/case_config.txt`, and a rerun with another configuration in the same directory is
+refused. The bias settings (`BIAS_MU`, `BIAS_NTOYS`, `BIAS_GENERATE`, `BIAS_MASSES`, `BIAS=0` to
+skip it, ...) are listed in the header of the script. Record every case in
+`studies/cases/README.md`.
+
 ## Expected limits (step 7)
 
 ```
@@ -235,7 +259,7 @@ how many jobs were reused (`resumed`).
 Run inside the analysis environment, from the repository root:
 
 ```
-pytest                                   # everything, fit range 150-600 GeV (~11 min)
+pytest                                   # everything, fit range 150-600 GeV (~10 min)
 pytest -m "not closure and not slow"     # unit tests only (~1 min)
 pytest --fit-xmin 160 --fit-xmax 650     # another fit range (inside 100-800 GeV)
 ```
@@ -266,7 +290,8 @@ default 150-600 GeV, as in `run_all.sh`).
   sets the mass; the shape check of `make_datacards.py` catches a modified parameter; the
   expected limits of step 7 exist at every mass of the grid, with ordered quantiles, the median
   agrees with 1.96 σ_r (asymptotic CLs, σ_r from a `--robustFit` Asimov fit, within −15%/+20%),
-  and a failing Combine job is reported;
+  and a failing Combine job is reported; `studies/run_case.sh` skips finished parts, runs the
+  short bias test, and refuses another configuration in the same directory;
   `bias_test.py` runs end to end (two generators, several jobs: every fit counted in the
   Combine log, unique seeds, pull toys from several jobs, fixed-function fits close) and keeps
   going when a Combine job fails.

@@ -1,60 +1,78 @@
 # Notes for Claude Code
 
-- Project: fits for a CMS dijet resonance search (Z'->qq), producing a RooWorkspace for Combine.
-  See README.md (workflow) and docs/OUTPUT_FORMAT.md (final output format; keep it up to date).
+Fits for a CMS dijet resonance search (Z' → qq): background and signal fits of m_jj spectra per
+category, a RooWorkspace and Combine datacards, expected limits and bias tests.
+
+- [README.md](README.md): the workflow (`run_all.sh`, steps 1–8), the scripts, the tests.
+- [docs/ANALYSIS_CONVENTIONS.md](docs/ANALYSIS_CONVENTIONS.md): the analysis decisions agreed with
+  the user (fit range, background selection, failure rules, statistical tests). **Binding**:
+  change them only when the user asks, together with the code, the tests and that file.
+- [docs/OUTPUT_FORMAT.md](docs/OUTPUT_FORMAT.md): the final output format; keep it up to date.
+- [studies/cases/README.md](studies/cases/README.md): the analysis cases run so far and their
+  results; add an entry for every new case.
+
+## Repository and git
+
+- Repository: `missirol/dijet-fit-tools` (renamed from `missirol/test-ClaudeCode-01`; the old
+  name only redirects). Default branch `main`.
+- Do not commit or push without the user's explicit request. Never push to `main`: one branch
+  per topic, started from the latest `main`, and a pull request to `main`. After a PR is merged,
+  start the next topic on a new branch from the updated `main`.
 - **Never commit ROOT files.** Input ROOT files are provided by the user via the prompt only.
-- Do not commit or push without the user's explicit request.
 - Commit authorship: the author (and committer) of every commit is the repository's owner, with
   their git credentials (name and email) as used in the repository history; Claude is credited
   only through the `Co-Authored-By:` trailer. Do not rely on the environment's git identity
   (cloud sessions are set up as Claude's own): take the owner's identity from the history, e.g.
   the author of the first commit of the default branch
-  (`git log --reverse --format='%an <%ae>' origin/main | head -1`, the account that owns the
-  GitHub repository), set it for the clone (`git config user.name ...`, `git config user.email
-  ...`) or pass `--author`, and check with `git log --format='%an <%ae>'` before pushing.
-- ROOT version: 6.36.14 (conda-forge), with CMS Combine 11.1.0 for RooMultiPdf. Run python
-  inside the conda environment (setup/shell.sh, `source setup/activate.sh` or
-  `setup/envrun.sh COMMAND`; these remove a ROOT set up in the calling shell); see setup/.
-- Analysis conventions agreed with the user:
-  - Categories are selected by regular expressions given to prepare_inputs.py (no category
-    names hard-coded in the scripts; defaults in run_all.sh): currently the 11 slices
-    `L1SCaloJet_Std_Mjj150dPhi1p0dY<A>to<B>` (inclusive 0p0to1p1 excluded), fitted independently.
-  - Signal normalised to 1 nb: x lumi (nb^-1, default 680000) / integral of `eventsProcessed`.
-  - One fit range for all categories, default 150-600 GeV. The range must stay configurable:
-    no fit-range numbers hard-coded in the scripts (defaults only in run_all.sh).
-    Raise the lower edge in 5 GeV steps if background fits fail, at most up to 200 GeV
-    (SCAN_MAX in run_all.sh). Rebinning is switched off by
-    default (the workspace only supports 1 GeV bins); it stays available for studies
-    (--rebin-factors), per category and logged. Drop M200 if the lower edge goes above 190 GeV.
-  - Background fits must reach p > 5% (plus status 0, covQual 3, no parameter at a limit);
-    only such fits are used. Families: those of the analysis note's background table (dijet,
-    moddijet, ua2, modexp, polypow, polyext; plus ua23, not in the note). Per family (its orders),
-    standard F-tests (5%) from the lowest
-    acceptable order give the highest order. Default = family maximum with the largest p-value;
-    up to 4 alternates = other acceptable orders up to their family maximum, ranked by p-value
-    (RooMultiPdf: up to 5 functions). RooFit warnings do not by themselves fail a fit; no cut
-    on pulls.
-  - An analysis case (a set of inputs and categories) fails if any category has no passing
-    background function at the highest allowed lower edge, or if any signal fit fails in any
-    category. Categories are never dropped; a failing case needs another categorisation.
-  - Yields always refer to the fit range.
-  - Signal fits: weighted templates with SumW2 errors by default; the MC-counts approach
-    ("--weights counts") stays available as an option.
-  - A signal fit is failed if status != 0, covQual != 3 or a floating parameter ends at its
-    limit (tail parameters that the procedure deliberately fixes at a limit do not count); every
-    signal fit must pass (see "analysis case fails"). Signal p-values are a quality figure, not a cut.
-  - Signal parameters vs mass: splines by default, polynomials via command line; each parameter
-    is interpolated only through the mass points where it was floating in the fit (with fewer
-    than two such points: through all points; agreed with the user), and held constant beyond
-    the outermost points used.
-  - Combine: one datacard per category, everything (data, background model, signal) taken from
-    the workspace. All statistical tests use the combination of the 11 categories (exclusive
-    data sets): background parameters uncorrelated across categories, only the signal strength
-    of a given signal common to all of them.
-  - Bias tests: toys with injected signal strengths per signal mass (e.g. mu = 0.5, 1, 5),
-    fitted with background + signal; check that the fits return the injected mu on average.
-    bias = (<r> - mu) / std(r); |bias| > 0.5 is shown in the plots and reported with a warning,
-    but does not fail a bias test (agreed with the user).
-- Every fit needs a plot with a pull sub-pad, pull = (data - fit) / data_error.
-- Tests: run `pytest` (inside the environment) after changes; extend the unit tests and the
-  closure test (tests/synthetic.py, tests/test_closure.py) together with new features.
+  (`git log --reverse --format='%an <%ae>' origin/main | head -1`; in a shallow clone, the author
+  of the latest pull-request merge, `git log --merges --committer=GitHub -1 --format='%an <%ae>'
+  origin/main`), set it for the clone (`git config user.name ...`, `git config user.email ...`)
+  or pass `--author`, and check with `git log --format='%an <%ae>'` before pushing.
+- Pull requests: describe what changed and why, how it was tested, and the open items; post
+  results of studies as PR comments (tables, not plots of the whole output).
+
+## Environment and tests
+
+- ROOT 6.36.14 (conda-forge) with CMS Combine 11.1.0 (RooMultiPdf, statistical tests). Create
+  the environment with `setup/install_env.sh [PREFIX]` (several minutes); run python inside it
+  with `setup/envrun.sh COMMAND`, `source setup/activate.sh` or `setup/shell.sh` (these remove a
+  ROOT set up in the calling shell). With a PREFIX outside the repository, set
+  `DIJET_ENV=PREFIX`.
+- Tests: `setup/envrun.sh pytest` after every change (all tests, about 10 minutes);
+  `pytest -m "not closure and not slow"` for the unit tests only (about 1 minute). Extend the
+  unit tests and the closure test (`tests/synthetic.py`, `tests/test_closure.py`) together with
+  new features.
+
+## Running analysis cases
+
+- Inputs: keep each set of uploaded files in its own directory outside the repository, renamed
+  to their original names (`L1ScoutingSelection_Run2026D.root`,
+  `ZprimeToQQ_M<M>_TuneCP5_13p6TeV_pythia8.root`). Before running, list the histograms, check
+  where the m_jj histograms start being filled (XMIN must not be below it) and whether the data
+  are identical to an earlier set (then reuse its results instead of rerunning).
+- Run a case with `studies/run_case.sh` (workflow, expected limits, short bias test; resumable).
+  Name cases as the user does (e.g. "Case 3", "Opt1") and record each one in
+  `studies/cases/README.md`.
+- Time budget: about 4 hours per case. The short bias test (100 toys per mass at μ = 1, default
+  generating function, envelope vs fixed fit) is the default; toys from every alternate function
+  or with pulls multiply the run time and are run only when the user asks.
+- Cloud sessions stop background jobs after 2 hours, and the machine has few CPUs (4 so far):
+  run long jobs in the background with the longest timeout, rerun the same resumable command
+  when one is stopped, schedule a check-in for when it should finish, and do not run two
+  CPU-heavy studies at full parallelism at the same time.
+- Report a case with: the fit range selected by the scan and why, the functions per category,
+  the signal fits, the expected limits and the bias, compared with the earlier cases.
+
+## Known pitfalls
+
+- Combine `--freezeParameters rgx{pdfindex_.*}` crashes (`parseRegex`): list the parameter
+  names explicitly (comma-separated; `datacards.json` has them).
+- With the envelope, uncertainties on r need `--robustFit 1`; Hesse/Minos errors are wrong (the
+  function index changes during the error scan).
+- Expected limits with the envelope can differ by about 1% between identical runs.
+- Combine prints stale "best fit" values after a failed fit; count fits from the output trees
+  (as `bias_test.py` does), not from the printout.
+- Input files have non-histogram keys (e.g. `TNamed`); check the class before reading a key as
+  a directory or histogram.
+- More categories do not by themselves give better limits: each category brings its own
+  background parameters and envelope (see Case 5 / Opt0 in `studies/cases/README.md`).

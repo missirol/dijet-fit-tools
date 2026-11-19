@@ -647,6 +647,33 @@ def test_bias_test_refuses_duplicate_values(run, tmp_path, monkeypatch):
         BT.main()
 
 
+def test_run_case_driver_resumes_and_keeps_its_configuration(run, tmp_path):
+    """studies/run_case.sh: with the workflow marked as done (a copy of this run's outputs), it
+    runs only the short bias test and marks it done; a rerun skips both parts; a rerun with
+    another configuration in the same directory is refused."""
+    import shutil
+    out = tmp_path / "case"
+    shutil.copytree(run["out"], out)
+    (out / ".run_case").mkdir()
+    (out / ".run_case" / "workflow").touch()
+    m = expected_masses(run["fit_range"])[-1]
+    env = dict(os.environ, **syn.workflow_config(*run["fit_range"]), BIAS_MASSES=str(m),
+               BIAS_NTOYS="4", BIAS_TOYS_PER_JOB="2", BIAS_JOBS="2")
+    cmd = [str(REPO / "studies" / "run_case.sh"), str(out), run["truth"]["files"]["data"],
+           *run["truth"]["files"]["signal"]]
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert "workflow (steps 1-7): done before, skipped" in p.stdout
+    assert "bias test (step 8): running" in p.stdout and (out / ".run_case" / "bias").exists()
+    res = json.loads((out / "bias" / "bias_results.json").read_text())
+    assert [pt["mass"] for pt in res["points"]] == [m] and res["failed_jobs"] == []
+    assert all(pt["summary"][f]["n"] == 4 for pt in res["points"] for f in ("envelope", "fixed"))
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert p.returncode == 0 and "bias test (step 8): done before, skipped" in p.stdout, p.stdout + p.stderr
+    p = subprocess.run(cmd, env=dict(env, BIAS_NTOYS="6"), capture_output=True, text=True)
+    assert p.returncode != 0 and "another configuration" in p.stderr and "BIAS_NTOYS" in p.stderr
+
+
 def test_make_datacards_detects_a_shape_mismatch(ROOT, run):
     """The shape check of make_datacards.py passes on the combined workspace and fails when a
     background shape parameter or the signal differs from the source workspace."""
