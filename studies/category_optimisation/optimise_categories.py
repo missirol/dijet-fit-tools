@@ -38,8 +38,8 @@ signal_regions.<fmt> (mass-averaged s/b map with the current and the C/E boundar
 scheme over the current categories).
 
 Example (the study of November 2026, on the second input set):
-  optimise_categories.py --data L1ScoutingSelection_Run2026D.root \\
-      --signal ZprimeToQQ_M{200,300,400,500}_TuneCP5_13p6TeV_pythia8.root \\
+  optimise_categories.py --data DATA.root \\
+      --signal SIGNAL_M{200,300,400,500}_*.root \\
       --hist L1SCaloJet_Std_Mjj150_J1J2_deltaRapAbs_deltaPhiAbs \\
       --slice-hists 'L1SCaloJet_Std_Mjj150dPhi1p0dY(?P<lo>\\d+p\\d+)to(?P<hi>\\d+p\\d+)_J1J2_mass' \\
       --exclude-slices 0p0to1p1 -o category_study

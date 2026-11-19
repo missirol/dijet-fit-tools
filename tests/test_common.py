@@ -39,7 +39,7 @@ def test_category_labels_strip_common_prefix_at_word_boundary():
 
 
 def test_mass_from_filename():
-    assert mass_from_filename("/a/b/ZprimeToQQ_M500_TuneCP5.root") == 500
+    assert mass_from_filename("/a/b/SIGNAL_M500_v1.root") == 500
     assert mass_from_filename("x-ZprimeQQ_M1250_synthetic.root") == 1250
     assert mass_from_filename("data.root") is None
 

@@ -10,9 +10,8 @@ Run it inside the analysis environment, e.g. on the second input set of November
 
 ```
 python studies/category_optimisation/optimise_categories.py \
-  --data L1ScoutingSelection_Run2026D.root \
-  --signal ZprimeToQQ_M200_TuneCP5_13p6TeV_pythia8.root ZprimeToQQ_M300_TuneCP5_13p6TeV_pythia8.root \
-           ZprimeToQQ_M400_TuneCP5_13p6TeV_pythia8.root ZprimeToQQ_M500_TuneCP5_13p6TeV_pythia8.root \
+  --data DATA.root \
+  --signal SIGNAL_M200_*.root SIGNAL_M300_*.root SIGNAL_M400_*.root SIGNAL_M500_*.root \
   --hist L1SCaloJet_Std_Mjj150_J1J2_deltaRapAbs_deltaPhiAbs \
   --slice-hists 'L1SCaloJet_Std_Mjj150dPhi1p0dY(?P<lo>\d+p\d+)to(?P<hi>\d+p\d+)_J1J2_mass' \
   --exclude-slices 0p0to1p1 -o category_study
