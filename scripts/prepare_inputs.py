@@ -17,7 +17,7 @@ of the matching pattern, or the full histogram name if the pattern has no captur
 Every signal file must contain the same histograms.
 
 Usage:
-    prepare_inputs.py --data DATA.root --signal ZprimeToQQ_M200_*.root ... \
+    prepare_inputs.py --data DATA.root --signal SIGNAL_M200_*.root ... \
         --categories 'REGEX' ['REGEX' ...] [--exclude 'REGEX' ...] -o inputs.root
 """
 import argparse
